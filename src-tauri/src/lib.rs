@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::Manager;
 
 // ── Storage layout ─────────────────────────────────────────────
 // <exe_dir>/kanban-data/
@@ -27,13 +26,21 @@ struct HistoryIndex {
     snapshots: Vec<HistoryEntry>,
 }
 
-fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let exe_dir = app.path().executable_dir().map_err(|e| e.to_string())?;
+fn data_dir() -> Result<PathBuf, String> {
+    // NOTE: tauri's `path().executable_dir()` is NOT "the folder containing
+    // the running executable" — it maps to the `dirs` crate's XDG
+    // executable-dir concept, which is Linux-only and returns an
+    // "unknown path" error on Windows and macOS. To reliably get the
+    // directory the .exe itself lives in, resolve it directly.
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| "could not resolve executable directory".to_string())?;
     Ok(exe_dir.join(APP_SUBDIR))
 }
 
-fn history_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(data_dir(app)?.join(HIST_SUBDIR))
+fn history_dir() -> Result<PathBuf, String> {
+    Ok(data_dir()?.join(HIST_SUBDIR))
 }
 
 fn read_index(path: &PathBuf) -> HistoryIndex {
@@ -57,8 +64,8 @@ fn atomic_write(dir: &PathBuf, final_path: &PathBuf, contents: &str) -> Result<(
 }
 
 #[tauri::command]
-fn get_storage_dir(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = data_dir(&app)?;
+fn get_storage_dir() -> Result<String, String> {
+    let dir = data_dir()?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.to_string_lossy().to_string())
 }
@@ -66,8 +73,8 @@ fn get_storage_dir(app: tauri::AppHandle) -> Result<String, String> {
 /// Returns the raw board JSON of the most recently saved state, or None if
 /// this is a fresh install / no state has ever been saved.
 #[tauri::command]
-fn load_latest_state(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let path = data_dir(&app)?.join("latest.json");
+fn load_latest_state() -> Result<Option<String>, String> {
+    let path = data_dir()?.join("latest.json");
     if !path.exists() {
         return Ok(None);
     }
@@ -76,19 +83,19 @@ fn load_latest_state(app: tauri::AppHandle) -> Result<Option<String>, String> {
 
 /// Returns the metadata for every saved history snapshot, oldest first.
 #[tauri::command]
-fn list_history(app: tauri::AppHandle) -> Result<Vec<HistoryEntry>, String> {
-    let idx_path = history_dir(&app)?.join("index.json");
+fn list_history() -> Result<Vec<HistoryEntry>, String> {
+    let idx_path = history_dir()?.join("index.json");
     Ok(read_index(&idx_path).snapshots)
 }
 
 /// Returns the raw board JSON stored in a specific history snapshot file.
 #[tauri::command]
-fn load_history_entry(app: tauri::AppHandle, filename: String) -> Result<String, String> {
+fn load_history_entry(filename: String) -> Result<String, String> {
     // Guard against path traversal since `filename` comes from the frontend.
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err("invalid filename".to_string());
     }
-    let path = history_dir(&app)?.join(&filename);
+    let path = history_dir()?.join(&filename);
     fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
@@ -97,7 +104,6 @@ fn load_history_entry(app: tauri::AppHandle, filename: String) -> Result<String,
 /// the refreshed history index so the frontend can update its UI in one call.
 #[tauri::command]
 fn save_snapshot(
-    app: tauri::AppHandle,
     board_json: String,
     timestamp: String,
     iso: String,
@@ -119,8 +125,8 @@ fn save_snapshot(
         .map(|a| a.len())
         .unwrap_or(0);
 
-    let d_dir = data_dir(&app)?;
-    let h_dir = history_dir(&app)?;
+    let d_dir = data_dir()?;
+    let h_dir = history_dir()?;
     fs::create_dir_all(&h_dir).map_err(|e| e.to_string())?;
 
     // 1. Write the history snapshot file (atomic).
