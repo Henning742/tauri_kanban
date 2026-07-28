@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use tauri::Manager;
 
 // ── Storage layout ─────────────────────────────────────────────
 // <exe_dir>/kanban-data/
@@ -171,6 +172,38 @@ fn write_external_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, &contents).map_err(|e| e.to_string())
 }
 
+/// Returns the primary monitor's width and height in logical pixels.
+#[tauri::command]
+fn get_monitor_size(app_handle: tauri::AppHandle) -> Result<(u32, u32), String> {
+    let window = app_handle
+        .get_webview_window("main")
+        .ok_or("no main window")?;
+    let monitor = window
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or("no monitor found")?;
+    let size = monitor.size();
+    Ok((size.width, size.height))
+}
+
+/// Persists window geometry (x, y, width, height) as JSON in the data dir.
+#[tauri::command]
+fn save_window_geometry(geometry_json: String) -> Result<(), String> {
+    let d_dir = data_dir()?;
+    let path = d_dir.join("geometry.json");
+    atomic_write(&d_dir, &path, &geometry_json)
+}
+
+/// Returns the last-saved window geometry JSON, or None.
+#[tauri::command]
+fn load_window_geometry() -> Result<Option<String>, String> {
+    let path = data_dir()?.join("geometry.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::read_to_string(&path).map(Some).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -184,6 +217,9 @@ pub fn run() {
             save_snapshot,
             read_external_file,
             write_external_file,
+            get_monitor_size,
+            save_window_geometry,
+            load_window_geometry,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

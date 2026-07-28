@@ -471,8 +471,10 @@
   var presetParentId = null;
   var activeTags = new Set();
   var draggedColId = null;
+  var draggedCardId = null;
   var _saveTimer = null;
   var _storageDirCache = null;
+  var _zoomLevel = 1.0;
 
   // ─── Tauri runtime guard ─────────────────────
   if (!window.__TAURI__) {
@@ -785,7 +787,7 @@
       // Column drag events
       colEl.addEventListener("dragstart", function(e){
         e.stopPropagation();
-        e.dataTransfer.setData("text/col-id", col.id);
+        e.dataTransfer.setData("text/plain", col.id);
         e.dataTransfer.effectAllowed = "move";
         colEl.classList.add("dragging");
         draggedColId = col.id;
@@ -886,7 +888,7 @@
   }
 
   function isColDrag(e){
-    return e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, "text/col-id") !== -1;
+    return draggedColId !== null;
   }
 
   function attachDropZone(el, parentId, columnId){
@@ -905,7 +907,7 @@
       e.preventDefault();
       if(!isColDrag(e)) e.stopPropagation();
       el.classList.remove("drag-over");
-      var draggedId = e.dataTransfer.getData("text/card-id");
+      var draggedId = draggedCardId;
       if(!draggedId) return;
       var dragged = findCard(draggedId);
       if(!dragged) return;
@@ -997,12 +999,15 @@
 
     el.addEventListener("dragstart", function(e){
       e.stopPropagation();
-      e.dataTransfer.setData("text/card-id", card.id);
+      e.dataTransfer.setData("text/plain", card.id);
+      e.dataTransfer.effectAllowed = "move";
       el.classList.add("dragging");
+      draggedCardId = card.id;
     });
     el.addEventListener("dragend", function(e){
       e.stopPropagation();
       el.classList.remove("dragging");
+      draggedCardId = null;
     });
     el.addEventListener("dblclick", function(e){
       e.stopPropagation();
@@ -1322,9 +1327,7 @@
     board.addEventListener("dragenter", function(e){ e.preventDefault(); });
     board.addEventListener("dragover", function(e){
       e.preventDefault();
-      if(!e.dataTransfer.types) return;
-      var hasCol = Array.prototype.indexOf.call(e.dataTransfer.types, "text/col-id") !== -1;
-      if(!hasCol || !draggedColId) return;
+      if(!draggedColId) return;
 
       var cols = this.querySelectorAll(".column:not(.dragging)");
       var insertIdx = cols.length;
@@ -1391,6 +1394,70 @@
       activeTags.clear();
       markDirty(); render();
     });
+
+    // ── Zoom: Ctrl+Scroll ──────────────────────────
+    var savedZoom = localStorage.getItem("kanban-zoom");
+    if(savedZoom){
+      _zoomLevel = parseFloat(savedZoom);
+      if(isNaN(_zoomLevel) || _zoomLevel < 0.5 || _zoomLevel > 3.0) _zoomLevel = 1.0;
+    }
+    document.documentElement.style.zoom = String(_zoomLevel);
+
+    document.addEventListener("wheel", function(e){
+      if(!e.ctrlKey) return;
+      e.preventDefault();
+      var delta = e.deltaY > 0 ? -0.05 : 0.05;
+      _zoomLevel = Math.max(0.5, Math.min(3.0, _zoomLevel + delta));
+      _zoomLevel = Math.round(_zoomLevel * 100) / 100; // round to 2 decimals
+      document.documentElement.style.zoom = String(_zoomLevel);
+      localStorage.setItem("kanban-zoom", String(_zoomLevel));
+    }, {passive: false});
+
+    // ── Window geometry: restore last size or default to 80% ──
+    (async function restoreWindowGeometry(){
+      try {
+        var winMod = window.__TAURI__.window;
+        var currentWindow = winMod.getCurrentWindow();
+        var PhysicalSize = winMod.PhysicalSize || function(w,h){ return {width:w, height:h}; };
+        var PhysicalPosition = winMod.PhysicalPosition || function(x,y){ return {x:x, y:y}; };
+
+        var saved = await invoke("load_window_geometry");
+        if(saved){
+          var geo = JSON.parse(saved);
+          if(geo.width && geo.height){
+            await currentWindow.setSize(new PhysicalSize(Math.round(geo.width), Math.round(geo.height)));
+            if(geo.x !== undefined && geo.y !== undefined){
+              try { await currentWindow.setPosition(new PhysicalPosition(Math.round(geo.x), Math.round(geo.y))); } catch(_){}
+            }
+          }
+        } else {
+          // First launch: resize to ~80% of monitor
+          var monitorSize = await invoke("get_monitor_size");
+          if(monitorSize){
+            var w = Math.round(monitorSize[0] * 0.8);
+            var h = Math.round(monitorSize[1] * 0.8);
+            await currentWindow.setSize(new PhysicalSize(w, h));
+            try { await currentWindow.center(); } catch(_){}
+          }
+        }
+      } catch(e){ console.warn("Window geometry restore failed:", e); }
+
+      // Debounced save on resize
+      var _resizeTimer = null;
+      try {
+        var currentWindow2 = window.__TAURI__.window.getCurrentWindow();
+        currentWindow2.onResized(function(event){
+          if(_resizeTimer) clearTimeout(_resizeTimer);
+          _resizeTimer = setTimeout(async function(){
+            try {
+              var pos = await currentWindow2.outerPosition();
+              var geo = JSON.stringify({width: event.payload.width, height: event.payload.height, x: pos.x, y: pos.y});
+              await invoke("save_window_geometry", {geometryJson: geo});
+            } catch(_){}
+          }, 500);
+        });
+      } catch(e){ console.warn("Window resize listener failed:", e); }
+    })();
 
     window.addEventListener("beforeunload", function(e){
       if(dirty){
