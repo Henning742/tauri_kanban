@@ -244,9 +244,9 @@
   .card{
     background:var(--card-bg);
     border:1px solid var(--paper-line);
-    border-left:4px solid var(--pri-color, var(--blue));
+    border-left:12px solid var(--pri-color, var(--blue));
     border-radius:4px;
-    padding:12px 12px 10px 14px;
+    padding:12px 12px 10px 16px;
     position:relative;
     box-shadow:0 1px 2px var(--shadow);
     cursor:grab;
@@ -390,6 +390,7 @@
   </div>
 
   <div class="tagbar" id="tagbar"></div>
+  <div class="tagbar due-filter-bar" id="dueFilterBar"></div>
 
   <main class="board" id="board"></main>
 </div>
@@ -459,7 +460,7 @@
   //  Constants
   // ──────────────────────────────────────────────
   var COLORS = ["#2F5D8A","#B08900","#A6512C","#3F6C51","#6A4C93","#1F7A6C"];
-  var TAG_PALETTE = ["#2F5D8A","#8a6d00","#A6512C","#3F6C51","#6A4C93","#1F7A6C","#8A3B5D","#4C6B3F","#5C4A1F","#3B5C7A"];
+  var TAG_COLOR = "#5C6B72"; // uniform color for all tags (was per-tag hashed color)
   var AUTOSAVE_MS = 2000;
 
   // ──────────────────────────────────────────────
@@ -470,6 +471,7 @@
   var editingCardId = null;
   var presetParentId = null;
   var activeTags = new Set();
+  var activeDueBucket = null;
   var draggedColId = null;
   var _saveTimer = null;
   var _storageDirCache = null;
@@ -687,11 +689,23 @@
     return "剩 "+daysLeft+" 天";
   }
 
+  // Buckets for the "剩余时间筛选" filter. `sample` is a representative
+  // daysLeft value fed into dueColor() so each bucket's chip is tinted
+  // consistently with the color already used on card due-chips.
+  var DUE_BUCKETS = [
+    { key:"overdue", label:"已过期",     sample:-3, test:function(d){ return d!==null && d<0; } },
+    { key:"today",   label:"今天到期",   sample:0,  test:function(d){ return d===0; } },
+    { key:"d1",      label:"剩1天",      sample:1,  test:function(d){ return d===1; } },
+    { key:"d2",      label:"剩2天",      sample:2,  test:function(d){ return d===2; } },
+    { key:"d3",      label:"剩3天",      sample:3,  test:function(d){ return d===3; } },
+    { key:"week",    label:"剩4-7天",    sample:5,  test:function(d){ return d!==null && d>=4 && d<=7; } },
+    { key:"later",   label:"7天以上",    sample:14, test:function(d){ return d!==null && d>7; } },
+    { key:"none",    label:"无截止日期", sample:null, test:function(d){ return d===null; } }
+  ];
+
   /* ---------- Tags ---------- */
-  function tagColor(name){
-    var sum=0;
-    for(var i=0;i<name.length;i++) sum += name.charCodeAt(i);
-    return TAG_PALETTE[sum % TAG_PALETTE.length];
+  function tagColor(){
+    return TAG_COLOR;
   }
   function getAllTags(){
     var set = new Set();
@@ -701,6 +715,7 @@
 
   function render(){
     renderTagbar();
+    renderDueFilterBar();
     renderBoard();
   }
 
@@ -744,19 +759,58 @@
     }
   }
 
+  function renderDueFilterBar(){
+    var bar = document.getElementById("dueFilterBar");
+    bar.innerHTML = "";
+    var label = document.createElement("span");
+    label.className = "tagbar-label";
+    label.textContent = "剩余时间筛选：";
+    bar.appendChild(label);
+
+    DUE_BUCKETS.forEach(function(b){
+      var chip = document.createElement("span");
+      chip.className = "tag-chip due-bucket-chip" + (activeDueBucket===b.key ? " active" : "");
+      chip.style.background = (b.sample===null) ? "var(--ink-soft)" : dueColor(b.sample);
+      chip.textContent = b.label;
+      chip.addEventListener("click", function(){
+        activeDueBucket = (activeDueBucket===b.key) ? null : b.key;
+        renderBoard();
+        renderDueFilterBar();
+      });
+      bar.appendChild(chip);
+    });
+
+    if(activeDueBucket){
+      var clearBtn = document.createElement("button");
+      clearBtn.className = "small";
+      clearBtn.textContent = "清除筛选";
+      clearBtn.addEventListener("click", function(){
+        activeDueBucket = null;
+        renderBoard();
+        renderDueFilterBar();
+      });
+      bar.appendChild(clearBtn);
+    }
+  }
+
   function cardMatchesFilter(card, query){
     var textOk = !query ||
       card.title.toLowerCase().indexOf(query)>-1 ||
       (card.desc||"").toLowerCase().indexOf(query)>-1;
     var tagOk = activeTags.size===0 || (card.tags||[]).some(function(t){return activeTags.has(t);});
-    return textOk && tagOk;
+    var dueOk = true;
+    if(activeDueBucket){
+      var bucket = DUE_BUCKETS.filter(function(b){ return b.key===activeDueBucket; })[0];
+      dueOk = !!bucket && bucket.test(daysUntil(card.due));
+    }
+    return textOk && tagOk && dueOk;
   }
 
   function renderBoard(){
     var board = document.getElementById("board");
     board.innerHTML = "";
     var query = document.getElementById("searchInput").value.trim().toLowerCase();
-    var filtering = !!query || activeTags.size>0;
+    var filtering = !!query || activeTags.size>0 || !!activeDueBucket;
 
     state.columns.forEach(function(col){
       var colEl = document.createElement("div");
@@ -1216,6 +1270,7 @@
       });
       state = data;
       activeTags.clear();
+      activeDueBucket = null;
       clearDirty();
       markDirty(); // trigger auto-save to history
       render();
@@ -1279,6 +1334,7 @@
       if(!board || !board.columns || !board.cards) throw new Error("数据格式不正确");
       state = board;
       activeTags.clear();
+      activeDueBucket = null;
       document.getElementById("historyModal").classList.add("hidden");
       markDirty();
       render();
@@ -1418,6 +1474,7 @@
       if(!confirm("确定清空整个看板吗？此操作不可撤销（建议先导出备份）。")) return;
       state = {columns:[{id:uid("col"),name:"待办",color:COLORS[0],width:320}], cards:[]};
       activeTags.clear();
+      activeDueBucket = null;
       markDirty(); render();
     });
 
