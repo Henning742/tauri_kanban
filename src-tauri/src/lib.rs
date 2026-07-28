@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::Manager;
 
 // ── Storage layout ─────────────────────────────────────────────
 // <exe_dir>/kanban-data/
@@ -158,6 +157,81 @@ fn save_snapshot(
     Ok(index.snapshots)
 }
 
+#[derive(Serialize, Deserialize)]
+struct WindowState {
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    maximized: bool,
+}
+
+fn window_state_path() -> Result<PathBuf, String> {
+    Ok(data_dir()?.join("window-state.json"))
+}
+
+fn apply_initial_window_state(window: &tauri::WebviewWindow) {
+    if let Ok(path) = window_state_path() {
+        if let Ok(raw) = fs::read_to_string(&path) {
+            if let Ok(state) = serde_json::from_str::<WindowState>(&raw) {
+                if state.maximized {
+                    let _ = window.maximize();
+                } else {
+                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                        width: state.width,
+                        height: state.height,
+                    }));
+                    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                        x: state.x,
+                        y: state.y,
+                    }));
+                }
+                return;
+            }
+        }
+    }
+
+    // No saved state yet (first launch): size to ~80% of the current monitor, centered.
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let size = monitor.size();
+        let target_w = (size.width as f64 * 0.8) as u32;
+        let target_h = (size.height as f64 * 0.8) as u32;
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: target_w,
+            height: target_h,
+        }));
+        let _ = window.center();
+    }
+}
+
+fn save_window_state(window: &tauri::WebviewWindow) {
+    let maximized = window.is_maximized().unwrap_or(false);
+    let size = window.outer_size().unwrap_or(tauri::PhysicalSize {
+        width: 800,
+        height: 600,
+    });
+    let pos = window
+        .outer_position()
+        .unwrap_or(tauri::PhysicalPosition { x: 0, y: 0 });
+
+    let state = WindowState {
+        width: size.width,
+        height: size.height,
+        x: pos.x,
+        y: pos.y,
+        maximized,
+    };
+
+    if let Ok(path) = window_state_path() {
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&state) {
+            let _ = fs::write(&path, json);
+        }
+    }
+}
+
 #[tauri::command]
 fn read_external_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
@@ -172,43 +246,26 @@ fn write_external_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, &contents).map_err(|e| e.to_string())
 }
 
-/// Returns the primary monitor's width and height in logical pixels.
-#[tauri::command]
-fn get_monitor_size(app_handle: tauri::AppHandle) -> Result<(u32, u32), String> {
-    let window = app_handle
-        .get_webview_window("main")
-        .ok_or("no main window")?;
-    let monitor = window
-        .current_monitor()
-        .map_err(|e| e.to_string())?
-        .ok_or("no monitor found")?;
-    let size = monitor.size();
-    Ok((size.width, size.height))
-}
-
-/// Persists window geometry (x, y, width, height) as JSON in the data dir.
-#[tauri::command]
-fn save_window_geometry(geometry_json: String) -> Result<(), String> {
-    let d_dir = data_dir()?;
-    let path = d_dir.join("geometry.json");
-    atomic_write(&d_dir, &path, &geometry_json)
-}
-
-/// Returns the last-saved window geometry JSON, or None.
-#[tauri::command]
-fn load_window_geometry() -> Result<Option<String>, String> {
-    let path = data_dir()?.join("geometry.json");
-    if !path.exists() {
-        return Ok(None);
-    }
-    fs::read_to_string(&path).map(Some).map_err(|e| e.to_string())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                apply_initial_window_state(&window);
+                let _ = window.show();
+
+                let window_for_close = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { .. } = event {
+                        save_window_state(&window_for_close);
+                    }
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_storage_dir,
             load_latest_state,
@@ -217,9 +274,6 @@ pub fn run() {
             save_snapshot,
             read_external_file,
             write_external_file,
-            get_monitor_size,
-            save_window_geometry,
-            load_window_geometry,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
