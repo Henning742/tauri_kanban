@@ -356,6 +356,18 @@
   @media (prefers-reduced-motion: reduce){
     *{transition:none !important;}
   }
+
+  /* ---------- History modal ---------- */
+  .history-modal .modal{width:520px;height:auto;max-height:70vh;}
+  .history-list{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:6px;}
+  .history-row{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:9px 11px;border:1px solid var(--paper-line);border-radius:4px;background:var(--paper);
+  }
+  .history-row.current{border-color:var(--blue);}
+  .history-meta{font-family:var(--mono);font-size:11.5px;color:var(--ink);line-height:1.5;}
+  .history-meta .badge{color:var(--ink-soft);font-size:10.5px;}
+  .history-path{font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);margin-top:10px;word-break:break-all;}
 </style>
 </head>
 <body>
@@ -427,6 +439,18 @@
   </div>
 </div>
 
+<div class="modal-overlay hidden history-modal" id="historyModal">
+  <div class="modal">
+    <h2>历史版本</h2>
+    <div class="history-list" id="historyList"></div>
+    <div class="history-path" id="historyPath"></div>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button id="btnHistoryClose">关闭</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
   "use strict";
@@ -436,9 +460,6 @@
   // ──────────────────────────────────────────────
   var COLORS = ["#2F5D8A","#B08900","#A6512C","#3F6C51","#6A4C93","#1F7A6C"];
   var TAG_PALETTE = ["#2F5D8A","#8a6d00","#A6512C","#3F6C51","#6A4C93","#1F7A6C","#8A3B5D","#4C6B3F","#5C4A1F","#3B5C7A"];
-  var APP_SUBDIR = "kanban-app";
-  var HIST_SUBDIR = "history";
-  var MAX_HISTORY = 50;
   var AUTOSAVE_MS = 2000;
 
   // ──────────────────────────────────────────────
@@ -450,8 +471,8 @@
   var presetParentId = null;
   var activeTags = new Set();
   var draggedColId = null;
-  var _appDataPath = null;
   var _saveTimer = null;
+  var _storageDirCache = null;
 
   // ─── Tauri runtime guard ─────────────────────
   if (!window.__TAURI__) {
@@ -516,66 +537,31 @@
     var h = String(date.getHours()).padStart(2,"0");
     var m = String(date.getMinutes()).padStart(2,"0");
     var s = String(date.getSeconds()).padStart(2,"0");
-    return y+M+d+"_"+h+m+s;
+    var ms = String(date.getMilliseconds()).padStart(3,"0");
+    return y+M+d+"_"+h+m+s+"_"+ms;
   }
 
-  async function sha256(str){
-    var encoder = new TextEncoder();
-    var data = encoder.encode(str);
-    var buf = await crypto.subtle.digest("SHA-256", data);
-    var bytes = new Uint8Array(buf);
-    var hex = [];
-    for(var i=0;i<bytes.length;i++) hex.push(bytes[i].toString(16).padStart(2,"0"));
-    return hex.join("");
+  async function getStorageDir(){
+    if(!_storageDirCache) _storageDirCache = await invoke("get_storage_dir");
+    return _storageDirCache;
   }
 
-  async function getAppDataPath(){
-    if(!_appDataPath) _appDataPath = await invoke("get_app_data_dir");
-    return _appDataPath;
-  }
-  async function getAppDir(){
-    return (await getAppDataPath()) + "/" + APP_SUBDIR;
-  }
-  async function getHistoryDir(){
-    return (await getAppDir()) + "/" + HIST_SUBDIR;
-  }
-
-  /* ─── Save sequence ─────────────── */
+  /* ─── Save sequence ───────────────
+     Every save writes a new timestamped snapshot into the history folder
+     AND overwrites latest.json to match — both live in <exe_dir>/kanban-data,
+     handled entirely on the Rust side (see save_snapshot). */
   async function saveState(){
     if(!dirty || !state) return;
     try {
       var stateJson = JSON.stringify(state, null, 2);
-      var hash = await sha256(stateJson);
       var ts = formatTimestamp(new Date());
       var iso = new Date().toISOString();
 
-      var snapshot = {
-        id: "snap_" + ts,
-        timestamp: iso,
-        hash: hash,
-        board: state
-      };
-      var snapJson = JSON.stringify(snapshot, null, 2);
-
-      var appDir = await getAppDir();
-      var histDir = await getHistoryDir();
-
-      // Ensure history directory exists
-      await invoke("plugin:fs|mkdir", { path: histDir, options: { recursive: true } });
-
-      // 1. Write temp file
-      var tmpPath = histDir + "/.tmp_" + ts + ".json";
-      await invoke("plugin:fs|write_text_file", { path: tmpPath, contents: snapJson });
-
-      // 2. Atomic rename to snapshot
-      var snapFile = "state_" + ts + ".json";
-      await invoke("plugin:fs|rename", { from: tmpPath, to: histDir + "/" + snapFile });
-
-      // 3. Write current.json
-      await invoke("plugin:fs|write_text_file", { path: appDir + "/current.json", contents: snapJson });
-
-      // 4. Update history index
-      await updateHistoryIndex(snapFile, iso, hash);
+      await invoke("save_snapshot", {
+        boardJson: stateJson,
+        timestamp: ts,
+        iso: iso
+      });
 
       clearDirty();
     } catch(e){
@@ -584,109 +570,44 @@
     }
   }
 
-  async function updateHistoryIndex(filename, timestamp, hash){
-    var indexPath = (await getAppDir()) + "/history_index.json";
-    var index = { snapshots: [] };
-    try {
-      var raw = await invoke("plugin:fs|read_text_file", { path: indexPath });
-      index = JSON.parse(raw);
-    } catch(_){ /* new index */ }
-
-    index.snapshots.push({
-      filename: filename,
-      timestamp: timestamp,
-      hash: hash,
-      boardSummary: { columns: state.columns.length, cards: state.cards.length }
-    });
-
-    // Prune to MAX_HISTORY
-    while(index.snapshots.length > MAX_HISTORY){
-      var old = index.snapshots.shift();
-      try {
-        await invoke("plugin:fs|remove", { path: (await getHistoryDir()) + "/" + old.filename });
-      } catch(_){}
-    }
-
-    await invoke("plugin:fs|write_text_file", { path: indexPath, contents: JSON.stringify(index, null, 2) });
-  }
-
   function scheduleAutoSave(){
     if(_saveTimer) clearTimeout(_saveTimer);
     _saveTimer = setTimeout(function(){ saveState(); }, AUTOSAVE_MS);
   }
 
-  /* ─── Load sequence ─────────────── */
+  /* ─── Load sequence ───────────────
+     On startup, load latest.json. If that's missing/corrupt, fall back to
+     the newest entry in history. If there's nothing at all, start fresh. */
   async function loadFromDisk(){
-    var appDir = await getAppDir();
-
-    // Try current.json
     try {
-      var ok = await invoke("plugin:fs|exists", { path: appDir + "/current.json" });
-      if(ok){
-        var raw = await invoke("plugin:fs|read_text_file", { path: appDir + "/current.json" });
-        var snap = JSON.parse(raw);
-        if(snap.board && snap.board.columns && snap.board.cards){
-          var boardJson = JSON.stringify(snap.board, null, 2);
-          if((await sha256(boardJson)) === snap.hash){
-            state = snap.board;
-            return; // successfully loaded
-          }
-        }
+      var raw = await invoke("load_latest_state");
+      if(raw){
+        var board = JSON.parse(raw);
+        if(board && board.columns && board.cards){ state = board; return; }
       }
-    } catch(_){ /* corrupted or missing */ }
+    } catch(e){ console.warn("Failed to load latest.json, will try history:", e); }
 
-    // Fallback: recover from history
     try {
       var recovered = await recoverFromHistory();
       if(recovered){ state = recovered; return; }
-    } catch(_){}
+    } catch(e){ console.warn("Failed to recover from history:", e); }
 
-    // Fresh start
     state = defaultState();
   }
 
   async function recoverFromHistory(){
-    var histDir = await getHistoryDir();
-    var indexPath = (await getAppDir()) + "/history_index.json";
-
-    try {
-      var raw = await invoke("plugin:fs|read_text_file", { path: indexPath });
-      var index = JSON.parse(raw);
-      var sorted = index.snapshots.slice().sort(function(a,b){
-        return b.timestamp.localeCompare(a.timestamp);
-      });
-      for(var i=0;i<sorted.length;i++){
-        try {
-          var snapRaw = await invoke("plugin:fs|read_text_file", { path: histDir + "/" + sorted[i].filename });
-          var snap = JSON.parse(snapRaw);
-          if(snap.board && snap.board.columns && snap.board.cards){
-            var boardJson = JSON.stringify(snap.board, null, 2);
-            if((await sha256(boardJson)) === snap.hash) return snap.board;
-          }
-        } catch(_){}
-      }
-    } catch(_){ /* no index */ }
-
-    // Scan history directory directly
-    try {
-      var files = await invoke("plugin:fs|list", { path: histDir });
-      var stateFiles = [];
-      for(var j=0;j<files.length;j++){
-        if(files[j].name && files[j].name.startsWith("state_")) stateFiles.push(files[j].name);
-      }
-      stateFiles.sort().reverse();
-      for(var k=0;k<stateFiles.length;k++){
-        try {
-          var snapRaw = await invoke("plugin:fs|read_text_file", { path: histDir + "/" + stateFiles[k] });
-          var snap = JSON.parse(snapRaw);
-          if(snap.board && snap.board.columns && snap.board.cards){
-            var boardJson = JSON.stringify(snap.board, null, 2);
-            if((await sha256(boardJson)) === snap.hash) return snap.board;
-          }
-        } catch(_){}
-      }
-    } catch(_){}
-
+    var snapshots = await invoke("list_history");
+    if(!snapshots || !snapshots.length) return null;
+    var sorted = snapshots.slice().sort(function(a,b){
+      return b.timestamp.localeCompare(a.timestamp);
+    });
+    for(var i=0;i<sorted.length;i++){
+      try {
+        var raw = await invoke("load_history_entry", { filename: sorted[i].filename });
+        var board = JSON.parse(raw);
+        if(board && board.columns && board.cards) return board;
+      } catch(_){}
+    }
     return null;
   }
 
@@ -1249,23 +1170,37 @@
 
   /* ─── Export / Import (Tauri) ─────── */
   async function exportJSON(){
-    var today = new Date();
-    var stamp = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,"0")+"-"+String(today.getDate()).padStart(2,"0");
-    var savePath = await invoke("plugin:dialog|save", {
-      filters: [{ name: "JSON", extensions: ["json"] }],
-      defaultPath: "看板数据-" + stamp + ".json"
-    });
-    if(!savePath) return;
-    var payload = JSON.stringify(state, null, 2);
-    await invoke("write_external_file", { path: savePath, contents: payload });
-    clearDirty();
+    try {
+      var today = new Date();
+      var stamp = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,"0")+"-"+String(today.getDate()).padStart(2,"0");
+      var savePath = await invoke("plugin:dialog|save", {
+        options: {
+          filters: [{ name: "JSON", extensions: ["json"] }],
+          defaultPath: "kanban-" + stamp + ".json"
+        }
+      });
+      if(!savePath) return;
+      var payload = JSON.stringify(state, null, 2);
+      await invoke("write_external_file", { path: savePath, contents: payload });
+      clearDirty();
+    } catch(e){
+      // If dialog fails (e.g. no backend), fallback to saving in storage dir
+      console.warn("Dialog save failed, using storage fallback:", e);
+      var storagePath = (await getStorageDir()) + "/export_" + formatTimestamp(new Date()) + ".json";
+      var payload = JSON.stringify(state, null, 2);
+      await invoke("write_external_file", { path: storagePath, contents: payload });
+      clearDirty();
+      alert("已保存到应用目录：" + storagePath);
+    }
   }
 
   async function importJSON(){
     var openPath = await invoke("plugin:dialog|open", {
-      filters: [{ name: "JSON", extensions: ["json"] }],
-      multiple: false,
-      directory: false
+      options: {
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        multiple: false,
+        directory: false
+      }
     });
     if(!openPath) return;
     try {
@@ -1285,47 +1220,73 @@
       markDirty(); // trigger auto-save to history
       render();
     } catch(err){
-      alert("导入失败：文件格式不正确。\n"+err.message);
+      alert("导入失败：文件格式不正确。\n" + (err && err.message ? err.message : err));
     }
   }
 
   /* ─── History restore ────────────── */
   async function showHistory(){
-    var indexPath = (await getAppDir()) + "/history_index.json";
-    var index;
-    try {
-      index = JSON.parse(await invoke("plugin:fs|read_text_file", { path: indexPath }));
-    } catch(_){ alert("暂无历史版本"); return; }
-    if(!index.snapshots.length){ alert("暂无历史版本"); return; }
+    var modal = document.getElementById("historyModal");
+    var listEl = document.getElementById("historyList");
+    var pathEl = document.getElementById("historyPath");
+    listEl.innerHTML = '<p class="none-hint">加载中…</p>';
+    modal.classList.remove("hidden");
 
-    var list = index.snapshots.slice(-20).reverse();
-    var msg = "选择要恢复的历史版本：\n\n";
-    for(var i=0;i<list.length;i++){
-      var s = list[i];
-      var dt = s.timestamp.slice(0,19).replace("T"," ");
-      msg += (i+1) + ". " + dt + " (" + s.boardSummary.cards + " 张卡片)\n";
+    getStorageDir().then(function(dir){ pathEl.textContent = "存储位置：" + dir; }).catch(function(){});
+
+    var snapshots;
+    try {
+      snapshots = await invoke("list_history");
+    } catch(err){
+      listEl.innerHTML = '<p class="none-hint">加载历史失败：' + (err && err.message ? err.message : err) + '</p>';
+      return;
     }
-    msg += "\n输入编号 (1-" + list.length + ")，或取消";
+    if(!snapshots || !snapshots.length){
+      listEl.innerHTML = '<p class="none-hint">暂无历史版本</p>';
+      return;
+    }
 
-    var choice = prompt(msg);
-    if(!choice) return;
-    var idx = parseInt(choice) - 1;
-    if(isNaN(idx) || idx<0 || idx>=list.length) return;
+    var sorted = snapshots.slice().reverse(); // newest first
+    listEl.innerHTML = "";
+    sorted.forEach(function(entry, i){
+      var row = document.createElement("div");
+      row.className = "history-row" + (i===0 ? " current" : "");
+      var dt = (entry.timestamp || "").slice(0,19).replace("T"," ");
+      var meta = document.createElement("span");
+      meta.className = "history-meta";
+      meta.textContent = dt + (i===0 ? "（最新）" : "");
+      var badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "  " + entry.columns + " 栏目 · " + entry.cards + " 卡片";
+      meta.appendChild(badge);
 
-    var entry = list[idx];
+      var btn = document.createElement("button");
+      btn.className = "small";
+      btn.textContent = "恢复";
+      btn.addEventListener("click", function(){ restoreHistoryEntry(entry); });
+
+      row.appendChild(meta);
+      row.appendChild(btn);
+      listEl.appendChild(row);
+    });
+  }
+
+  async function restoreHistoryEntry(entry){
+    if(!confirm("确定恢复到 " + (entry.timestamp||"").slice(0,19).replace("T"," ") + " 的版本吗？当前未保存的更改将会丢失。")) return;
     try {
-      var histDir = await getHistoryDir();
-      var snapRaw = await invoke("plugin:fs|read_text_file", { path: histDir + "/" + entry.filename });
-      var snap = JSON.parse(snapRaw);
-      var boardJson = JSON.stringify(snap.board, null, 2);
-      if((await sha256(boardJson)) !== snap.hash){ alert("文件校验失败，无法恢复"); return; }
-      state = snap.board;
+      var raw = await invoke("load_history_entry", { filename: entry.filename });
+      var board = JSON.parse(raw);
+      if(!board || !board.columns || !board.cards) throw new Error("数据格式不正确");
+      state = board;
       activeTags.clear();
+      document.getElementById("historyModal").classList.add("hidden");
       markDirty();
       render();
-      await saveState(); // create new history entry
+      await saveState(); // record the restore as a new history entry too
       alert("已恢复到所选版本");
-    } catch(err){ alert("恢复失败：" + err.message); }
+    } catch(err){
+      alert("恢复失败：" + (err && err.message ? err.message : err));
+    }
   }
 
   /* ---------- Wire up ---------- */
@@ -1348,6 +1309,9 @@
     });
     document.addEventListener("keydown", function(e){
       if(e.key==="Escape" && !document.getElementById("cardModal").classList.contains("hidden")) closeModal();
+      if(e.key==="Escape" && !document.getElementById("historyModal").classList.contains("hidden")){
+        document.getElementById("historyModal").classList.add("hidden");
+      }
     });
 
     document.getElementById("searchInput").addEventListener("input", renderBoard);
@@ -1406,13 +1370,19 @@
 
     // Export / Import (async)
     document.getElementById("btnExport").addEventListener("click", async function(){
-      try { await exportJSON(); } catch(e){ alert("导出失败：" + e.message); }
+      try { await exportJSON(); } catch(e){ alert("导出失败：" + (e && e.message ? e.message : e)); }
     });
     document.getElementById("btnImport").addEventListener("click", async function(){
-      try { await importJSON(); } catch(e){ alert("导入失败：" + e.message); }
+      try { await importJSON(); } catch(e){ alert("导入失败：" + (e && e.message ? e.message : e)); }
     });
     document.getElementById("btnHistory").addEventListener("click", async function(){
-      try { await showHistory(); } catch(e){ alert("历史恢复失败：" + e.message); }
+      try { await showHistory(); } catch(e){ alert("历史恢复失败：" + (e && e.message ? e.message : e)); }
+    });
+    document.getElementById("btnHistoryClose").addEventListener("click", function(){
+      document.getElementById("historyModal").classList.add("hidden");
+    });
+    document.getElementById("historyModal").addEventListener("mousedown", function(e){
+      if(e.target.id==="historyModal") document.getElementById("historyModal").classList.add("hidden");
     });
 
     document.getElementById("btnClear").addEventListener("click", function(){
