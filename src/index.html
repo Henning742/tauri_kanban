@@ -151,6 +151,18 @@
   .tag-chip.active{opacity:1;border-color:var(--ink);box-shadow:0 0 0 1px var(--ink) inset;}
   .tagbar .none-hint{font-family:var(--mono);font-size:11px;color:var(--ink-soft);}
 
+  .filter-toggle-bar{
+    display:flex;align-items:center;justify-content:center;gap:5px;
+    padding:2px 0;cursor:pointer;user-select:none;-webkit-user-select:none;
+    font-family:var(--mono);font-size:10px;color:var(--ink-soft);
+    letter-spacing:0.5px;
+    border-bottom:1px solid transparent;
+    flex-shrink:0;
+  }
+  .filter-toggle-bar:hover{color:var(--ink);background:rgba(47,93,138,0.06);}
+  .filter-toggle-chevron{display:inline-block;transition:transform 0.15s ease;font-size:9px;}
+  .filter-toggle-bar.collapsed .filter-toggle-chevron{transform:rotate(-90deg);}
+
   /* ---------- Board ---------- */
   .board{
     flex:1;
@@ -389,8 +401,14 @@
     <button id="btnClear" class="danger">清空看板</button>
   </div>
 
-  <div class="tagbar" id="tagbar"></div>
-  <div class="tagbar due-filter-bar" id="dueFilterBar"></div>
+  <div class="filter-toggle-bar" id="btnToggleFilters" title="收起/展开筛选栏">
+    <span class="filter-toggle-chevron" id="filterToggleChevron">▾</span>
+    <span id="filterToggleLabel">筛选栏</span>
+  </div>
+  <div id="filterBarsWrap">
+    <div class="tagbar" id="tagbar"></div>
+    <div class="tagbar due-filter-bar" id="dueFilterBar"></div>
+  </div>
 
   <main class="board" id="board"></main>
 </div>
@@ -692,15 +710,20 @@
   // Buckets for the "剩余时间筛选" filter. `sample` is a representative
   // daysLeft value fed into dueColor() so each bucket's chip is tinted
   // consistently with the color already used on card due-chips.
+  // Selecting a bucket is cumulative: it matches that bucket AND everything
+  // more urgent than it (e.g. "剩1天" also includes 已过期 and 今天到期),
+  // via `maxDays` — daysLeft <= maxDays. "无截止日期" is the one exception:
+  // it isn't part of the urgency spectrum, so it matches only cards with no
+  // due date at all.
   var DUE_BUCKETS = [
-    { key:"overdue", label:"已过期",     sample:-3, test:function(d){ return d!==null && d<0; } },
-    { key:"today",   label:"今天到期",   sample:0,  test:function(d){ return d===0; } },
-    { key:"d1",      label:"剩1天",      sample:1,  test:function(d){ return d===1; } },
-    { key:"d2",      label:"剩2天",      sample:2,  test:function(d){ return d===2; } },
-    { key:"d3",      label:"剩3天",      sample:3,  test:function(d){ return d===3; } },
-    { key:"week",    label:"剩4-7天",    sample:5,  test:function(d){ return d!==null && d>=4 && d<=7; } },
-    { key:"later",   label:"7天以上",    sample:14, test:function(d){ return d!==null && d>7; } },
-    { key:"none",    label:"无截止日期", sample:null, test:function(d){ return d===null; } }
+    { key:"overdue", label:"已过期",     sample:-3,   maxDays:-1 },
+    { key:"today",   label:"今天到期",   sample:0,    maxDays:0  },
+    { key:"d1",      label:"剩1天",      sample:1,    maxDays:1  },
+    { key:"d2",      label:"剩2天",      sample:2,    maxDays:2  },
+    { key:"d3",      label:"剩3天",      sample:3,    maxDays:3  },
+    { key:"week",    label:"剩4-7天",    sample:5,    maxDays:7  },
+    { key:"later",   label:"7天以上",    sample:14,   maxDays:Infinity },
+    { key:"none",    label:"无截止日期", sample:null, maxDays:null }
   ];
 
   /* ---------- Tags ---------- */
@@ -772,6 +795,9 @@
       chip.className = "tag-chip due-bucket-chip" + (activeDueBucket===b.key ? " active" : "");
       chip.style.background = (b.sample===null) ? "var(--ink-soft)" : dueColor(b.sample);
       chip.textContent = b.label;
+      chip.title = (b.key==="none")
+        ? "仅显示无截止日期的卡片"
+        : "显示「"+b.label+"」及更紧急的卡片";
       chip.addEventListener("click", function(){
         activeDueBucket = (activeDueBucket===b.key) ? null : b.key;
         renderBoard();
@@ -801,7 +827,10 @@
     var dueOk = true;
     if(activeDueBucket){
       var bucket = DUE_BUCKETS.filter(function(b){ return b.key===activeDueBucket; })[0];
-      dueOk = !!bucket && bucket.test(daysUntil(card.due));
+      var d = daysUntil(card.due);
+      if(bucket){
+        dueOk = (bucket.key==="none") ? (d===null) : (d!==null && d<=bucket.maxDays);
+      }
     }
     return textOk && tagOk && dueOk;
   }
@@ -1373,9 +1402,31 @@
     });
   }
 
+  /* ---------- Filter bars collapse/expand ---------- */
+  var filtersCollapsed = localStorage.getItem("kanban_filters_collapsed") === "1";
+
+  function applyFilterBarsCollapsed(){
+    var wrap = document.getElementById("filterBarsWrap");
+    var toggle = document.getElementById("btnToggleFilters");
+    var label = document.getElementById("filterToggleLabel");
+    wrap.classList.toggle("hidden", filtersCollapsed);
+    toggle.classList.toggle("collapsed", filtersCollapsed);
+    label.textContent = filtersCollapsed ? "展开筛选栏" : "收起筛选栏";
+  }
+
+  function setupFilterToggle(){
+    applyFilterBarsCollapsed();
+    document.getElementById("btnToggleFilters").addEventListener("click", function(){
+      filtersCollapsed = !filtersCollapsed;
+      try { localStorage.setItem("kanban_filters_collapsed", filtersCollapsed ? "1" : "0"); } catch(_){}
+      applyFilterBarsCollapsed();
+    });
+  }
+
   /* ---------- Wire up ---------- */
   async function init(){
     setupZoom();
+    setupFilterToggle();
     await loadFromDisk();
     render();
 
