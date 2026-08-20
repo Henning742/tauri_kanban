@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>看板工作台 · 离线计划板</title>
+<style>
+  :root{
+    --paper:#EEF0EA;
+    --paper-line:#D6DBD0;
+    --card-bg:#FBFAF5;
+    --ink:#243642;
+    --ink-soft:#5C6B72;
+    --blue:#2F5D8A;
+    --amber:#B08900;
+    --rust:#A6512C;
+    --green:#3F6C51;
+    --shadow:rgba(36,51,63,0.18);
+    --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;}
+  body{
+    font-family:var(--sans);
+    color:var(--ink);
+    background:var(--paper);
+    display:flex;
+    flex-direction:column;
+    height:100vh;
+    overflow:hidden;
+  }
+  .app{display:flex;flex-direction:column;height:100%;}
+
+  /* ---------- Topbar ---------- */
+  .topbar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:18px 26px 10px;
+    border-bottom:1px solid var(--paper-line);
+    flex-shrink:0;
+  }
+  .brand h1{
+    font-family:var(--mono);
+    font-size:20px;
+    letter-spacing:2px;
+    text-transform:uppercase;
+    margin:0;
+    font-weight:700;
+  }
+  .brand p{
+    margin:4px 0 0;
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--ink-soft);
+    letter-spacing:1px;
+  }
+  /* ---------- Column drag & resize ---------- */
+  .column{position:relative;}
+  .column.dragging{opacity:0.5;}
+  .col-resize-handle{
+    position:absolute;top:0;right:0;bottom:0;
+    width:8px;cursor:col-resize;z-index:10;
+    background:transparent;
+  }
+  .col-resize-handle::after{
+    content:"";position:absolute;top:30%;bottom:30%;right:2px;
+    width:2px;background:var(--paper-line);border-radius:1px;
+    transition:background .15s,top .15s,bottom .15s;
+  }
+  .col-resize-handle:hover::after,
+  .col-resize-handle.resizing::after{background:var(--blue);top:10%;bottom:10%;}
+  .col-drop-placeholder{
+    flex-shrink:0;
+    border:2.5px dashed var(--blue);
+    border-radius:6px;
+    background:rgba(47,93,138,0.04);
+    display:none;
+    min-width:100px;
+  }
+  .col-drop-placeholder.show{display:block;}
+
+
+  /* ---------- Toolbar ---------- */
+  .toolbar{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:10px 26px;
+    border-bottom:1px solid var(--paper-line);
+    flex-shrink:0;
+    flex-wrap:wrap;
+    max-height:5vh;
+    overflow-y:auto;
+    box-sizing:border-box;
+  }
+  button{
+    font-family:var(--sans);
+    font-size:13px;
+    border:1.5px solid var(--ink);
+    background:var(--card-bg);
+    color:var(--ink);
+    padding:7px 13px;
+    border-radius:3px;
+    cursor:pointer;
+    transition:transform .12s ease, background .12s ease;
+  }
+  button:hover{background:var(--ink);color:var(--paper);}
+  button:active{transform:scale(0.96);}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#fff;}
+  button.primary:hover{background:#254a6e;}
+  button.danger{border-color:var(--rust);color:var(--rust);background:transparent;}
+  button.danger:hover{background:var(--rust);color:#fff;}
+  button.small{padding:2px 8px;font-size:11px;}
+  .toolbar input#searchInput{
+    font-family:var(--mono);
+    font-size:12.5px;
+    padding:7px 10px;
+    border:1.5px solid var(--paper-line);
+    border-radius:3px;
+    background:var(--card-bg);
+    color:var(--ink);
+    min-width:200px;
+  }
+  .toolbar input#searchInput:focus{outline:2px solid var(--blue);outline-offset:1px;}
+  .hide-empty-toggle{
+    display:inline-flex;align-items:center;gap:4px;
+    font-family:var(--mono);font-size:11px;color:var(--ink-soft);
+    cursor:pointer;user-select:none;white-space:nowrap;
+  }
+  .hide-empty-toggle input[type=checkbox]{margin:0;cursor:pointer;}
+  .spacer{flex:1;}
+  .dirty{font-family:var(--mono);font-size:11.5px;color:var(--amber);letter-spacing:0.5px;}
+  .hidden{display:none !important;}
+
+  /* ---------- Tag bar ---------- */
+  .tagbar{
+    display:flex;flex-wrap:wrap;gap:7px;align-items:center;
+    padding:9px 26px;border-bottom:1px solid var(--paper-line);flex-shrink:0;
+    max-height:5vh;
+    overflow-y:auto;
+  }
+  .tagbar-label{font-family:var(--mono);font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.5px;margin-right:2px;}
+  .tag-chip{
+    font-family:var(--mono);font-size:11px;color:#fff;border-radius:12px;
+    padding:3px 10px;cursor:pointer;border:2px solid transparent;opacity:0.78;
+    user-select:none; line-height:1.4;
+  }
+  .tag-chip:hover{opacity:1;}
+  .tag-chip.active{opacity:1;border-color:var(--ink);box-shadow:0 0 0 1px var(--ink) inset;}
+  .tagbar .none-hint{font-family:var(--mono);font-size:11px;color:var(--ink-soft);}
+
+  .filter-toggle-bar{
+    display:flex;align-items:center;justify-content:center;gap:5px;
+    padding:2px 0;cursor:pointer;user-select:none;-webkit-user-select:none;
+    font-family:var(--mono);font-size:10px;color:var(--ink-soft);
+    letter-spacing:0.5px;
+    border-bottom:1px solid transparent;
+    flex-shrink:0;
+  }
+  .filter-toggle-bar:hover{color:var(--ink);background:rgba(47,93,138,0.06);}
+  .filter-toggle-chevron{display:inline-block;transition:transform 0.15s ease;font-size:9px;}
+  .filter-toggle-bar.collapsed .filter-toggle-chevron{transform:rotate(-90deg);}
+
+  /* ---------- Board ---------- */
+  .board{
+    flex:1;
+    display:flex;
+    gap:18px;
+    padding:20px 26px 26px;
+    overflow:auto;
+    align-items:flex-start;
+    background-image:
+      linear-gradient(var(--paper-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--paper-line) 1px, transparent 1px);
+    background-size:24px 24px;
+  }
+  .column{
+    background:rgba(255,255,255,0.35);
+    border:1px solid var(--paper-line);
+    border-radius:6px;
+    width:320px;
+    min-width:180px;
+    display:flex;
+    flex-direction:column;
+    flex-shrink:0;
+  }
+  .column-head{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:10px 12px;
+    user-select:none;
+    -webkit-user-select:none;
+    border-bottom:2px solid var(--col-color, var(--blue));
+    position:relative;
+  }
+  .column-head .tab{
+    width:10px;height:10px;border-radius:2px;
+    background:var(--col-color, var(--blue));
+    flex-shrink:0;
+  }
+  .column-head h3{
+    font-family:var(--mono);
+    font-size:13px;
+    letter-spacing:1px;
+    text-transform:uppercase;
+    margin:0;
+    flex:1;
+    outline:none;
+    cursor:text;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .column-head .count{
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--ink-soft);
+    background:var(--paper);
+    border-radius:10px;
+    padding:1px 7px;
+  }
+  .column-head .col-del{
+    border:none;background:none;color:var(--ink-soft);
+    font-size:14px;padding:0 2px;cursor:pointer;line-height:1;
+  }
+  .column-head .col-del:hover{color:var(--rust);background:none;}
+  .column-add{
+    border:none;background:none;color:var(--ink-soft);
+    font-family:var(--mono);font-size:16px;padding:0 4px;cursor:pointer;
+  }
+  .column-add:hover{color:var(--blue);background:none;}
+
+  .card-list{
+    padding:10px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    min-height:70px;
+  }
+  .card-list.drag-over{background:rgba(47,93,138,0.07);}
+
+  .empty-hint{
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--ink-soft);
+    text-align:center;
+    padding:12px 4px;
+    border:1px dashed var(--paper-line);
+    border-radius:4px;
+  }
+
+  /* ---------- Card ---------- */
+  .card{
+    background:var(--card-bg);
+    border:1px solid var(--paper-line);
+    border-left:12px solid var(--pri-color, var(--blue));
+    border-radius:4px;
+    padding:12px 12px 10px 16px;
+    position:relative;
+    box-shadow:0 1px 2px var(--shadow);
+    cursor:grab;
+  }
+  .card:active{cursor:grabbing;}
+  .card.dragging{opacity:0.4;}
+  .card-body.dimmed{opacity:0.32;}
+  .card::before{
+    content:"";
+    position:absolute;
+    top:9px;left:-4px;
+    width:7px;height:7px;
+    border-radius:50%;
+    background:var(--paper);
+    border:1px solid var(--paper-line);
+  }
+  .card-header{display:flex;align-items:flex-start;gap:7px;}
+  .priority-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex-shrink:0;}
+  .priority-dot.high{background:var(--rust);}
+  .priority-dot.medium{background:var(--amber);}
+  .priority-dot.low{background:var(--blue);}
+  .card-title{font-weight:600;font-size:14px;flex:1;line-height:1.35;}
+  .due-chip{
+    font-family:var(--mono);font-size:10.5px;color:#fff;border-radius:10px;
+    padding:2px 8px;white-space:nowrap;flex-shrink:0;
+  }
+  .due-chip.none{background:transparent;color:var(--ink-soft);padding:2px 0;}
+  .card-desc{font-size:12.5px;color:var(--ink-soft);margin:6px 0 0;line-height:1.4;white-space:pre-wrap;word-break:break-word;}
+  .card-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;}
+  .tag-pill{font-family:var(--mono);font-size:10.5px;color:#fff;border-radius:10px;padding:1px 8px;}
+  .card-actions{position:absolute;top:8px;right:8px;display:none;gap:4px;}
+  .card:hover > .card-actions{display:flex;}
+  .card-actions button{padding:2px 7px;font-size:11px;}
+
+  .card-children{
+    margin-top:10px;
+    padding:6px 0 2px 6px;
+    display:flex;flex-direction:column;gap:10px;
+    min-height:38px;
+  }
+  .card-children.drag-over{background:rgba(47,93,138,0.08);}
+  .card-children .empty-hint{margin-top:0;}
+
+  /* ---------- Modal ---------- */
+  .modal-overlay{
+    position:fixed;inset:0;background:rgba(36,51,63,0.45);
+    display:flex;align-items:center;justify-content:center;z-index:50;
+  }
+  .modal{
+    background:var(--card-bg);
+    width:80vw;
+    height:80vh;
+    max-width:80vw;
+    max-height:80vh;
+    border-radius:6px;
+    border:1px solid var(--paper-line);
+    padding:22px 24px;
+    box-shadow:0 10px 30px rgba(0,0,0,0.25);
+    box-sizing:border-box;
+    display:flex;
+    flex-direction:column;
+  }
+  .modal h2{font-family:var(--mono);font-size:16px;letter-spacing:1px;margin:0 0 14px;text-transform:uppercase;flex-shrink:0;}
+  .modal-fields{
+    flex:1 1 auto;
+    min-height:0;
+    overflow-y:auto;
+    display:flex;
+    flex-direction:column;
+  }
+  .modal-fields textarea#fDesc{
+    flex:1 1 auto;
+    min-height:120px;
+  }
+  .parent-note{
+    font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);
+    background:var(--paper);border:1px dashed var(--paper-line);border-radius:4px;
+    padding:7px 9px;margin-bottom:6px;
+  }
+  .modal label{display:block;font-family:var(--mono);font-size:11px;color:var(--ink-soft);letter-spacing:0.5px;margin:12px 0 4px;text-transform:uppercase;}
+  .modal input[type=text], .modal input[type=date], .modal textarea, .modal select{
+    width:100%;
+    font-family:var(--sans);
+    font-size:13.5px;
+    padding:8px 9px;
+    border:1.5px solid var(--paper-line);
+    border-radius:3px;
+    background:#fff;
+    color:var(--ink);
+  }
+  .modal textarea{resize:vertical;min-height:56px;font-family:var(--sans);}
+  .modal .row{display:flex;gap:12px;}
+  .modal .row > div{flex:1;}
+  .priority-radio-group{display:flex;gap:14px;align-items:center;padding:8px 0 2px;}
+  .priority-radio-group .radio-option{
+    display:inline-flex;align-items:center;gap:5px;
+    font-family:var(--sans);font-size:13.5px;color:var(--ink);
+    cursor:pointer;user-select:none;text-transform:none;letter-spacing:normal;
+    margin:0;
+  }
+  .priority-radio-group .radio-option input[type=radio]{
+    margin:0;cursor:pointer;accent-color:var(--blue);
+  }
+  .existing-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;}
+  .modal-actions{display:flex;align-items:center;gap:8px;margin-top:20px;}
+
+  @media (prefers-reduced-motion: reduce){
+    *{transition:none !important;}
+  }
+
+  /* ---------- History modal ---------- */
+  .history-modal .modal{width:520px;height:auto;max-height:70vh;}
+  .history-list{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:6px;}
+  .history-row{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:9px 11px;border:1px solid var(--paper-line);border-radius:4px;background:var(--paper);
+  }
+  .history-row.current{border-color:var(--blue);}
+  .history-meta{font-family:var(--mono);font-size:11.5px;color:var(--ink);line-height:1.5;}
+  .history-meta .badge{color:var(--ink-soft);font-size:10.5px;}
+  .history-path{font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);margin-top:10px;word-break:break-all;}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="toolbar">
+    <button id="btnNewCard" class="primary">+ 新卡片</button>
+    <button id="btnNewColumn">+ 新栏目</button>
+    <input type="text" id="searchInput" placeholder="搜索标题 / 描述…">
+    <label class="hide-empty-toggle" title="过滤时隐藏无匹配卡片的栏目">
+      <input type="checkbox" id="hideEmptyCols">
+      <span>隐藏未被筛选的栏目</span>
+    </label>
+    <div class="spacer"></div>
+    <span class="dirty hidden" id="dirtyFlag">● 有未导出的更改</span>
+    <button id="btnImport">导入 JSON</button>
+    <button id="btnHistory">历史版本</button>
+    <button id="btnExport" class="primary">导出 JSON</button>
+    <button id="btnClear" class="danger">清空看板</button>
+  </div>
+
+  <div class="filter-toggle-bar" id="btnToggleFilters" title="收起/展开筛选栏">
+    <span class="filter-toggle-chevron" id="filterToggleChevron">▾</span>
+    <span id="filterToggleLabel">筛选栏</span>
+  </div>
+  <div id="filterBarsWrap">
+    <div class="tagbar" id="tagbar"></div>
+    <div class="tagbar due-filter-bar" id="dueFilterBar"></div>
+  </div>
+
+  <main class="board" id="board"></main>
+</div>
+
+<div class="modal-overlay hidden" id="cardModal">
+  <div class="modal">
+    <h2 id="modalTitle">新建卡片</h2>
+    <div class="modal-fields" id="modalFields">
+      <div class="parent-note hidden" id="parentNote"></div>
+      <label>标题</label>
+      <input type="text" id="fTitle" placeholder="例如：完成用户调研报告">
+      
+      <label>描述</label>
+      <textarea id="fDesc" placeholder="补充说明、上下文或链接…"></textarea>
+      
+      <div class="row">
+        <div>
+          <label>优先级</label>
+          <div class="priority-radio-group" id="fPriorityGroup">
+            <label class="radio-option"><input type="radio" name="fPriority" value="low" checked> 低</label>
+            <label class="radio-option"><input type="radio" name="fPriority" value="medium"> 中</label>
+            <label class="radio-option"><input type="radio" name="fPriority" value="high"> 高</label>
+          </div>
+        </div>
+        
+        <div>
+          <label id="fColumnLabel">所在栏目</label>
+          <select id="fColumn"></select>
+        </div>
+        
+        <div>
+          <label>截止日期</label>
+          <input type="date" id="fDue">
+        </div>
+      </div>
+      
+      <label>标签（用逗号分隔）</label>
+      <input type="text" id="fTags" placeholder="例如：设计, 前端">
+      <div class="existing-tags" id="existingTagsPicker"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="btnDeleteCard" class="danger hidden">删除卡片</button>
+      <div class="spacer"></div>
+      <button id="btnCancel">取消</button>
+      <button id="btnSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden history-modal" id="historyModal">
+  <div class="modal">
+    <h2>历史版本</h2>
+    <div class="history-list" id="historyList"></div>
+    <div class="history-path" id="historyPath"></div>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button id="btnHistoryClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ──────────────────────────────────────────────
+  //  Constants
+  // ──────────────────────────────────────────────
+  var COLORS = ["#2F5D8A","#B08900","#A6512C","#3F6C51","#6A4C93","#1F7A6C"];
+  var TAG_COLOR = "#5C6B72"; // uniform color for all tags (was per-tag hashed color)
+  var AUTOSAVE_MS = 2000;
+
+  // ──────────────────────────────────────────────
+  //  State
+  // ──────────────────────────────────────────────
+  var state = null;
+  var dirty = false;
+  var editingCardId = null;
+  var presetParentId = null;
+  var activeTags = new Set();
+  var activeDueBucket = null;
+  var draggedColId = null;
+  var _saveTimer = null;
+  var _storageDirCache = null;
+
+  // ─── Tauri runtime guard ─────────────────────
+  if (!window.__TAURI__) {
+    document.body.innerHTML = '<p style="padding:40px;font-family:sans-serif;">此应用需要 Tauri 运行时。</p>';
+    throw new Error("No Tauri runtime");
+  }
+  var invoke = window.__TAURI__.core.invoke;
+
+  // ──────────────────────────────────────────────
+  //  Utility helpers
+  // ──────────────────────────────────────────────
+  function getFPriority(){
+    var radios = document.getElementsByName("fPriority");
+    for(var i=0;i<radios.length;i++){ if(radios[i].checked) return radios[i].value; }
+    return "low";
+  }
+  function setFPriority(val){
+    var radios = document.getElementsByName("fPriority");
+    var found = false;
+    for(var i=0;i<radios.length;i++){
+      radios[i].checked = (radios[i].value === val);
+      if(radios[i].checked) found = true;
+    }
+    if(!found && radios.length){ radios[0].checked = true; }
+  }
+
+  function uid(prefix){
+    return prefix + "_" + Math.random().toString(36).slice(2,9) + Date.now().toString(36).slice(-4);
+  }
+  
+  function defaultState(){
+    var colBacklog = uid("col"), colDoing = uid("col"), colReview = uid("col"), colDone = uid("col");
+    var researchId = uid("card");
+    return {
+      columns: [
+        {id:colBacklog, name:"待办", color:COLORS[0], width:320},
+        {id:colDoing,   name:"进行中", color:COLORS[1], width:320},
+        {id:colReview,  name:"评审", color:COLORS[2], width:320},
+        {id:colDone,    name:"已完成", color:COLORS[3], width:320}
+      ],
+      cards: [
+        {id:uid("card"), parentId:null, columnId:colBacklog, title:"梳理下季度计划大纲", desc:"列出目标、里程碑与负责人。", priority:"medium", due:"", tags:["规划"], order:0},
+        {id:researchId, parentId:null, columnId:colDoing, title:"完成用户调研报告", desc:"整理访谈记录，输出结论与建议。", priority:"high", due:addDays(3), tags:["调研","文档"], order:0},
+        {id:uid("card"), parentId:researchId, columnId:colDoing, title:"整理访谈记录", desc:"", priority:"medium", due:addDays(1), tags:["调研"], order:0},
+        {id:uid("card"), parentId:researchId, columnId:colDoing, title:"撰写建议", desc:"", priority:"medium", due:addDays(4), tags:["文档"], order:1},
+        {id:uid("card"), parentId:null, columnId:colReview, title:"评审新版原型", desc:"确认交互细节是否符合预期。", priority:"medium", due:addDays(10), tags:["设计"], order:0},
+        {id:uid("card"), parentId:null, columnId:colDone, title:"搭建看板初版", desc:"完成基础拖拽与卡片功能。", priority:"low", due:"", tags:["工具"], order:0}
+      ]
+    };
+  }
+
+  function addDays(n){
+    var d = new Date();
+    d.setDate(d.getDate()+n);
+    return d.toISOString().slice(0,10);
+  }
+
+  function formatTimestamp(date){
+    var y = date.getFullYear();
+    var M = String(date.getMonth()+1).padStart(2,"0");
+    var d = String(date.getDate()).padStart(2,"0");
+    var h = String(date.getHours()).padStart(2,"0");
+    var m = String(date.getMinutes()).padStart(2,"0");
+    var s = String(date.getSeconds()).padStart(2,"0");
+    var ms = String(date.getMilliseconds()).padStart(3,"0");
+    return y+M+d+"_"+h+m+s+"_"+ms;
+  }
+
+  async function getStorageDir(){
+    if(!_storageDirCache) _storageDirCache = await invoke("get_storage_dir");
+    return _storageDirCache;
+  }
+
+  /* ─── Save sequence ───────────────
+     Every save writes a new timestamped snapshot into the history folder
+     AND overwrites latest.json to match — both live in <exe_dir>/kanban-data,
+     handled entirely on the Rust side (see save_snapshot). */
+  async function saveState(){
+    if(!dirty || !state) return;
+    try {
+      var stateJson = JSON.stringify(state, null, 2);
+      var ts = formatTimestamp(new Date());
+      var iso = new Date().toISOString();
+
+      await invoke("save_snapshot", {
+        boardJson: stateJson,
+        timestamp: ts,
+        iso: iso
+      });
+
+      clearDirty();
+    } catch(e){
+      console.error("Auto-save failed:", e);
+      // Keep dirty flag so user knows save didn't complete
+    }
+  }
+
+  function scheduleAutoSave(){
+    if(_saveTimer) clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(function(){ saveState(); }, AUTOSAVE_MS);
+  }
+
+  /* ─── Load sequence ───────────────
+     On startup, load latest.json. If that's missing/corrupt, fall back to
+     the newest entry in history. If there's nothing at all, start fresh. */
+  async function loadFromDisk(){
+    try {
+      var raw = await invoke("load_latest_state");
+      if(raw){
+        var board = JSON.parse(raw);
+        if(board && board.columns && board.cards){ state = board; return; }
+      }
+    } catch(e){ console.warn("Failed to load latest.json, will try history:", e); }
+
+    try {
+      var recovered = await recoverFromHistory();
+      if(recovered){ state = recovered; return; }
+    } catch(e){ console.warn("Failed to recover from history:", e); }
+
+    state = defaultState();
+  }
+
+  async function recoverFromHistory(){
+    var snapshots = await invoke("list_history");
+    if(!snapshots || !snapshots.length) return null;
+    var sorted = snapshots.slice().sort(function(a,b){
+      return b.timestamp.localeCompare(a.timestamp);
+    });
+    for(var i=0;i<sorted.length;i++){
+      try {
+        var raw = await invoke("load_history_entry", { filename: sorted[i].filename });
+        var board = JSON.parse(raw);
+        if(board && board.columns && board.cards) return board;
+      } catch(_){}
+    }
+    return null;
+  }
+
+  function markDirty(){
+    dirty = true;
+    document.getElementById("dirtyFlag").classList.remove("hidden");
+    scheduleAutoSave();
+  }
+  function clearDirty(){
+    dirty = false;
+    document.getElementById("dirtyFlag").classList.add("hidden");
+  }
+
+  /* ---------- Tree helpers ---------- */
+  function findCard(id){
+    return state.cards.find(function(c){return c.id===id;});
+  }
+  function getChildren(parentId){
+    return state.cards.filter(function(c){return c.parentId===parentId;})
+      .sort(function(a,b){return a.order-b.order;});
+  }
+  function getRootCards(colId){
+    return state.cards.filter(function(c){return c.parentId===null && c.columnId===colId;})
+      .sort(function(a,b){return a.order-b.order;});
+  }
+  function isDescendantOf(nodeId, ancestorId){
+    var cur = findCard(nodeId);
+    while(cur && cur.parentId){
+      if(cur.parentId===ancestorId) return true;
+      cur = findCard(cur.parentId);
+    }
+    return false;
+  }
+  function propagateColumn(cardId, colId){
+    var card = findCard(cardId);
+    if(!card) return;
+    card.columnId = colId;
+    getChildren(cardId).forEach(function(ch){ propagateColumn(ch.id, colId); });
+  }
+  function getDescendantIds(cardId){
+    var out = [];
+    getChildren(cardId).forEach(function(ch){
+      out.push(ch.id);
+      out = out.concat(getDescendantIds(ch.id));
+    });
+    return out;
+  }
+  function normalizeSiblings(parentId, columnId){
+    var siblings;
+    if(parentId){
+      siblings = state.cards.filter(function(c){return c.parentId===parentId;});
+    } else {
+      siblings = state.cards.filter(function(c){return c.parentId===null && c.columnId===columnId;});
+    }
+    siblings.sort(function(a,b){return a.order-b.order;});
+    siblings.forEach(function(c,i){c.order=i;});
+  }
+
+  /* ---------- Due date / countdown ---------- */
+  function daysUntil(dueStr){
+    if(!dueStr) return null;
+    var today = new Date(); today.setHours(0,0,0,0);
+    var due = new Date(dueStr+"T00:00:00");
+    return Math.round((due-today)/86400000);
+  }
+  function dueColor(daysLeft){
+    var GREEN=[63,108,81], RED=[166,81,44];
+    if(daysLeft>=7) return "rgb("+GREEN.join(",")+")";
+    if(daysLeft<=1) return "rgb("+RED.join(",")+")";
+    var t = (daysLeft-1)/6;
+    var c = [0,1,2].map(function(i){return Math.round(RED[i]+(GREEN[i]-RED[i])*t);});
+    return "rgb("+c.join(",")+")";
+  }
+  function dueLabel(daysLeft){
+    if(daysLeft<0) return "已过期 "+Math.abs(daysLeft)+" 天";
+    if(daysLeft===0) return "今天截止";
+    return "剩 "+daysLeft+" 天";
+  }
+
+  // Buckets for the "剩余时间筛选" filter. `sample` is a representative
+  // daysLeft value fed into dueColor() so each bucket's chip is tinted
+  // consistently with the color already used on card due-chips.
+  // Selecting a bucket is cumulative: it matches that bucket AND everything
+  // more urgent than it (e.g. "剩1天" also includes 已过期 and 今天到期),
+  // via `maxDays` — daysLeft <= maxDays. "无截止日期" is the one exception:
+  // it isn't part of the urgency spectrum, so it matches only cards with no
+  // due date at all.
+  var DUE_BUCKETS = [
+    { key:"overdue", label:"已过期",     sample:-3,   maxDays:-1 },
+    { key:"today",   label:"今天到期",   sample:0,    maxDays:0  },
+    { key:"d1",      label:"剩1天",      sample:1,    maxDays:1  },
+    { key:"d2",      label:"剩2天",      sample:2,    maxDays:2  },
+    { key:"d3",      label:"剩3天",      sample:3,    maxDays:3  },
+    { key:"week",    label:"剩4-7天",    sample:5,    maxDays:7  },
+    { key:"later",   label:"7天以上",    sample:14,   maxDays:Infinity },
+    { key:"none",    label:"无截止日期", sample:null, maxDays:null }
+  ];
+
+  /* ---------- Tags ---------- */
+  function tagColor(){
+    return TAG_COLOR;
+  }
+  function getAllTags(){
+    var set = new Set();
+    state.cards.forEach(function(c){ (c.tags||[]).forEach(function(t){set.add(t);}); });
+    return Array.from(set).sort();
+  }
+
+  function render(){
+    renderTagbar();
+    renderDueFilterBar();
+    renderBoard();
+  }
+
+  function renderTagbar(){
+    var bar = document.getElementById("tagbar");
+    bar.innerHTML = "";
+    var tags = getAllTags();
+    var label = document.createElement("span");
+    label.className = "tagbar-label";
+    label.textContent = "标签筛选：";
+    bar.appendChild(label);
+    if(tags.length===0){
+      var hint = document.createElement("span");
+      hint.className = "none-hint";
+      hint.textContent = "暂无标签";
+      bar.appendChild(hint);
+      return;
+    }
+    tags.forEach(function(t){
+      var chip = document.createElement("span");
+      chip.className = "tag-chip" + (activeTags.has(t) ? " active" : "");
+      chip.style.background = tagColor(t);
+      chip.textContent = t;
+      chip.addEventListener("click", function(){
+        if(activeTags.has(t)) activeTags.delete(t); else activeTags.add(t);
+        renderBoard();
+        renderTagbar();
+      });
+      bar.appendChild(chip);
+    });
+    if(activeTags.size>0){
+      var clearBtn = document.createElement("button");
+      clearBtn.className = "small";
+      clearBtn.textContent = "清除筛选";
+      clearBtn.addEventListener("click", function(){
+        activeTags.clear();
+        renderBoard();
+        renderTagbar();
+      });
+      bar.appendChild(clearBtn);
+    }
+  }
+
+  function renderDueFilterBar(){
+    var bar = document.getElementById("dueFilterBar");
+    bar.innerHTML = "";
+    var label = document.createElement("span");
+    label.className = "tagbar-label";
+    label.textContent = "剩余时间筛选：";
+    bar.appendChild(label);
+
+    DUE_BUCKETS.forEach(function(b){
+      var chip = document.createElement("span");
+      chip.className = "tag-chip due-bucket-chip" + (activeDueBucket===b.key ? " active" : "");
+      chip.style.background = (b.sample===null) ? "var(--ink-soft)" : dueColor(b.sample);
+      chip.textContent = b.label;
+      chip.title = (b.key==="none")
+        ? "仅显示无截止日期的卡片"
+        : "显示「"+b.label+"」及更紧急的卡片";
+      chip.addEventListener("click", function(){
+        activeDueBucket = (activeDueBucket===b.key) ? null : b.key;
+        renderBoard();
+        renderDueFilterBar();
+      });
+      bar.appendChild(chip);
+    });
+
+    if(activeDueBucket){
+      var clearBtn = document.createElement("button");
+      clearBtn.className = "small";
+      clearBtn.textContent = "清除筛选";
+      clearBtn.addEventListener("click", function(){
+        activeDueBucket = null;
+        renderBoard();
+        renderDueFilterBar();
+      });
+      bar.appendChild(clearBtn);
+    }
+  }
+
+  function cardMatchesFilter(card, query){
+    var textOk = !query ||
+      card.title.toLowerCase().indexOf(query)>-1 ||
+      (card.desc||"").toLowerCase().indexOf(query)>-1;
+    var tagOk = activeTags.size===0 || (card.tags||[]).some(function(t){return activeTags.has(t);});
+    var dueOk = true;
+    if(activeDueBucket){
+      var bucket = DUE_BUCKETS.filter(function(b){ return b.key===activeDueBucket; })[0];
+      var d = daysUntil(card.due);
+      if(bucket){
+        dueOk = (bucket.key==="none") ? (d===null) : (d!==null && d<=bucket.maxDays);
+      }
+    }
+    return textOk && tagOk && dueOk;
+  }
+
+  function renderBoard(){
+    var board = document.getElementById("board");
+    board.innerHTML = "";
+    var query = document.getElementById("searchInput").value.trim().toLowerCase();
+    var filtering = !!query || activeTags.size>0 || !!activeDueBucket;
+
+    state.columns.forEach(function(col){
+      var colEl = document.createElement("div");
+      colEl.className = "column";
+      colEl.draggable = true;
+      colEl.style.setProperty("--col-color", col.color);
+      colEl.dataset.colId = col.id;
+      colEl.style.width = (col.width || 320) + "px";
+
+      var head = document.createElement("div");
+      head.className = "column-head";
+      head.innerHTML =
+        '<span class="tab"></span>' +
+        '<h3 contenteditable="true" spellcheck="false"></h3>' +
+        '<span class="count"></span>' +
+        '<button class="column-add" title="在此栏目新建卡片">+</button>' +
+        '<button class="col-del" title="删除栏目">×</button>';
+      head.querySelector("h3").textContent = col.name;
+      colEl.appendChild(head);
+
+      // Resize handle on right edge of column
+      var resizeHandle = document.createElement("div");
+      resizeHandle.className = "col-resize-handle";
+      colEl.appendChild(resizeHandle);
+
+      // Column drag events
+      colEl.addEventListener("dragstart", function(e){
+        e.stopPropagation();
+        e.dataTransfer.setData("text/col-id", col.id);
+        e.dataTransfer.effectAllowed = "move";
+        colEl.classList.add("dragging");
+        draggedColId = col.id;
+      });
+      colEl.addEventListener("dragend", function(e){
+        e.stopPropagation();
+        colEl.classList.remove("dragging");
+        delete board.dataset.dropIdx;
+        draggedColId = null;
+      });
+
+      // Column resize via mousedown on handle
+      resizeHandle.addEventListener("mousedown", function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        var startX = ev.clientX;
+        var startW = colEl.offsetWidth;
+        function onMove(me){
+          var w = Math.max(180, startW + (me.clientX - startX));
+          colEl.style.width = w + "px";
+          col.width = w;
+          markDirty();
+        }
+        function onUp(){
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          document.body.style.cursor = "";
+          resizeHandle.classList.remove("resizing");
+        }
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+        document.body.style.cursor = "col-resize";
+        resizeHandle.classList.add("resizing");
+      });
+
+      var list = document.createElement("div");
+      list.className = "card-list";
+      var roots = getRootCards(col.id);
+
+      if(roots.length===0){
+        var hint = document.createElement("div");
+        hint.className = "empty-hint";
+        hint.textContent = "暂无卡片";
+        list.appendChild(hint);
+      } else {
+        roots.forEach(function(card){
+          list.appendChild(buildCardEl(card, col.color, query, filtering));
+        });
+      }
+
+      head.querySelector(".count").textContent = state.cards.filter(function(c){return c.columnId===col.id;}).length;
+      colEl.appendChild(list);
+
+      // Hide column if toggle is on and no cards match current filter
+      if(filtering && document.getElementById("hideEmptyCols").checked){
+        var hasMatch = state.cards.some(function(c){
+          return c.columnId === col.id && cardMatchesFilter(c, query);
+        });
+        if(!hasMatch) colEl.classList.add("hidden");
+      }
+
+      board.appendChild(colEl);
+      attachDropZone(list, null, col.id);
+
+      head.querySelector("h3").addEventListener("blur", function(e){
+        var newName = e.target.textContent.trim() || "未命名栏目";
+        col.name = newName;
+        markDirty();
+      });
+      head.querySelector(".col-del").addEventListener("click", function(){
+        var count = state.cards.filter(function(c){return c.columnId===col.id;}).length;
+        if(count>0 && !confirm('栏目"'+col.name+'"中有 '+count+' 张卡片（含子卡片），确定删除吗？')) return;
+        var rootIds = getRootCards(col.id).map(function(c){return c.id;});
+        var toDelete = [];
+        rootIds.forEach(function(id){ toDelete.push(id); toDelete = toDelete.concat(getDescendantIds(id)); });
+        state.columns = state.columns.filter(function(c){return c.id!==col.id;});
+        state.cards = state.cards.filter(function(c){return toDelete.indexOf(c.id)===-1;});
+        markDirty(); render();
+      });
+      head.querySelector(".column-add").addEventListener("click", function(){
+        openCardModal(null, col.id, null);
+      });
+    });
+
+  }
+
+  function getDragAfterElementScoped(container, y){
+    var els = Array.prototype.slice.call(container.querySelectorAll(":scope > .card:not(.dragging)"));
+    var closest = {offset:-Infinity, element:null};
+    els.forEach(function(el){
+      var box = el.getBoundingClientRect();
+      var offset = y - box.top - box.height/2;
+      if(offset<0 && offset>closest.offset){
+        closest = {offset:offset, element:el};
+      }
+    });
+    return closest.element;
+  }
+
+  function isColDrag(e){
+    return e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, "text/col-id") !== -1;
+  }
+
+  function attachDropZone(el, parentId, columnId){
+    el.addEventListener("dragover", function(e){
+      e.preventDefault();
+      if(!isColDrag(e)){
+        e.stopPropagation();
+        el.classList.add("drag-over");
+      }
+    });
+    el.addEventListener("dragleave", function(e){
+      e.stopPropagation();
+      el.classList.remove("drag-over");
+    });
+    el.addEventListener("drop", function(e){
+      e.preventDefault();
+      if(!isColDrag(e)) e.stopPropagation();
+      el.classList.remove("drag-over");
+      var draggedId = e.dataTransfer.getData("text/card-id");
+      if(!draggedId) return;
+      var dragged = findCard(draggedId);
+      if(!dragged) return;
+      if(parentId){
+        if(draggedId===parentId || isDescendantOf(parentId, draggedId)) return;
+      } else {
+        if(draggedId===columnId) return;
+      }
+      var afterEl = getDragAfterElementScoped(el, e.clientY);
+      var siblingsCount = el.querySelectorAll(":scope > .card").length;
+      var targetOrder = afterEl ? parseFloat(afterEl.dataset.order) - 0.5 : siblingsCount;
+      dragged.parentId = parentId || null;
+      propagateColumn(dragged.id, columnId);
+      dragged.order = targetOrder;
+      normalizeSiblings(parentId || null, columnId);
+      markDirty(); render();
+    });
+  }
+
+  function priorityColor(p){
+    if(p==="high") return "#C0392B";
+    if(p==="low") return "#FFFFFF";
+    return "#E8AFA3";
+  }
+
+  function buildCardEl(card, colColor, query, filtering){
+    var el = document.createElement("div");
+    el.className = "card";
+    el.draggable = true;
+    el.dataset.cardId = card.id;
+    el.dataset.order = card.order;
+    el.style.setProperty("--pri-color", priorityColor(card.priority));
+
+    var daysLeft = daysUntil(card.due);
+    var dueHtml = daysLeft===null
+      ? '<span class="due-chip none">无截止日期</span>'
+      : '<span class="due-chip" style="background:'+dueColor(daysLeft)+'">'+dueLabel(daysLeft)+'</span>';
+
+    var bodyDiv = document.createElement("div");
+    bodyDiv.className = "card-body";
+    if(filtering && !cardMatchesFilter(card, query)) bodyDiv.classList.add("dimmed");
+    bodyDiv.innerHTML =
+      '<div class="card-header">'+
+        '<span class="priority-dot '+card.priority+'"></span>'+
+        '<div class="card-title"></div>'+
+        dueHtml+
+      '</div>'+
+      (card.desc ? '<p class="card-desc"></p>' : '') +
+      (card.tags && card.tags.length ? '<div class="card-tags"></div>' : '');
+
+    bodyDiv.querySelector(".card-title").textContent = card.title;
+    if(card.desc) bodyDiv.querySelector(".card-desc").textContent = card.desc;
+    if(card.tags && card.tags.length){
+      var tagsWrap = bodyDiv.querySelector(".card-tags");
+      card.tags.forEach(function(t){
+        var tagEl = document.createElement("span");
+        tagEl.className = "tag-pill";
+        tagEl.style.background = tagColor(t);
+        tagEl.textContent = t;
+        tagsWrap.appendChild(tagEl);
+      });
+    }
+
+    var actionsDiv = document.createElement("div");
+    actionsDiv.className = "card-actions";
+    actionsDiv.innerHTML =
+      '<button class="add-child-btn" title="添加子卡片">+子卡片</button>'+
+      '<button class="edit-btn" title="编辑">编辑</button>';
+
+    el.appendChild(actionsDiv);
+    el.appendChild(bodyDiv);
+
+    var childrenEl = document.createElement("div");
+    childrenEl.className = "card-children";
+    childrenEl.style.setProperty("--col-color", colColor);
+    var children = getChildren(card.id);
+    if(children.length===0){
+      var hint = document.createElement("div");
+      hint.className = "empty-hint";
+      hint.textContent = "拖拽卡片到此处，使其成为子卡片";
+      childrenEl.appendChild(hint);
+    } else {
+      children.forEach(function(ch){
+        childrenEl.appendChild(buildCardEl(ch, colColor, query, filtering));
+      });
+    }
+    el.appendChild(childrenEl);
+    attachDropZone(childrenEl, card.id, card.columnId);
+
+    el.addEventListener("dragstart", function(e){
+      e.stopPropagation();
+      e.dataTransfer.setData("text/card-id", card.id);
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", function(e){
+      e.stopPropagation();
+      el.classList.remove("dragging");
+    });
+    el.addEventListener("dblclick", function(e){
+      e.stopPropagation();
+      openCardModal(card.id, null, null);
+    });
+    el.querySelector(".edit-btn").addEventListener("click", function(e){
+      e.stopPropagation();
+      openCardModal(card.id, null, null);
+    });
+    el.querySelector(".add-child-btn").addEventListener("click", function(e){
+      e.stopPropagation();
+      openCardModal(null, card.columnId, card.id);
+    });
+
+    return el;
+  }
+
+  /* ---------- Modal ---------- */
+  function openCardModal(cardId, presetColumnId, parentId){
+    editingCardId = cardId;
+    presetParentId = parentId;
+    var modal = document.getElementById("cardModal");
+    var colSelect = document.getElementById("fColumn");
+    var colLabel = document.getElementById("fColumnLabel");
+    var parentNote = document.getElementById("parentNote");
+    colSelect.innerHTML = "";
+    state.columns.forEach(function(c){
+      var opt = document.createElement("option");
+      opt.value = c.id; opt.textContent = c.name;
+      colSelect.appendChild(opt);
+    });
+
+    var effectiveParentId = cardId ? findCard(cardId).parentId : parentId;
+
+    if(effectiveParentId){
+      var parentCard = findCard(effectiveParentId);
+      parentNote.textContent = "将作为「"+parentCard.title+"」的子卡片，栏目跟随父卡片：" + (state.columns.find(function(c){return c.id===parentCard.columnId;})||{}).name;
+      parentNote.classList.remove("hidden");
+      colSelect.classList.add("hidden");
+      colLabel.classList.add("hidden");
+    } else {
+      parentNote.classList.add("hidden");
+      colSelect.classList.remove("hidden");
+      colLabel.classList.remove("hidden");
+    }
+
+    if(cardId){
+      var card = findCard(cardId);
+      document.getElementById("modalTitle").textContent = "编辑卡片";
+      document.getElementById("fTitle").value = card.title;
+      colSelect.value = card.columnId;
+      document.getElementById("fDesc").value = card.desc||"";
+      setFPriority(card.priority||"low");
+      document.getElementById("fDue").value = card.due||"";
+      document.getElementById("fTags").value = (card.tags||[]).join(", ");
+      document.getElementById("btnDeleteCard").classList.remove("hidden");
+    } else {
+      document.getElementById("modalTitle").textContent = "新建卡片";
+      document.getElementById("fTitle").value = "";
+      colSelect.value = presetColumnId || (state.columns[0] && state.columns[0].id);
+      document.getElementById("fDesc").value = "";
+      setFPriority("low");
+      document.getElementById("fDue").value = "";
+      document.getElementById("fTags").value = "";
+      document.getElementById("btnDeleteCard").classList.add("hidden");
+    }
+    renderExistingTagsPicker();
+    modal.classList.remove("hidden");
+    document.getElementById("fTitle").focus();
+  }
+
+  function renderExistingTagsPicker(){
+    var wrap = document.getElementById("existingTagsPicker");
+    wrap.innerHTML = "";
+    var tags = getAllTags();
+    if(tags.length===0) return;
+    var label = document.createElement("div");
+    label.style.cssText = "font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);width:100%;margin-bottom:2px;";
+    label.textContent = "点击添加已有标签：";
+    wrap.appendChild(label);
+    tags.forEach(function(t){
+      var chip = document.createElement("span");
+      chip.className = "tag-chip";
+      chip.style.background = tagColor(t);
+      chip.textContent = t;
+      chip.addEventListener("click", function(){
+        var input = document.getElementById("fTags");
+        var cur = input.value.split(",").map(function(s){return s.trim();}).filter(Boolean);
+        if(cur.indexOf(t)===-1){
+          cur.push(t);
+          input.value = cur.join(", ");
+        }
+      });
+      wrap.appendChild(chip);
+    });
+  }
+
+  function closeModal(){
+    document.getElementById("cardModal").classList.add("hidden");
+    editingCardId = null;
+    presetParentId = null;
+  }
+
+  function saveCardFromModal(){
+    var title = document.getElementById("fTitle").value.trim();
+    if(!title){ alert("请填写标题"); return; }
+    var tags = document.getElementById("fTags").value.split(",")
+      .map(function(t){return t.trim();}).filter(Boolean);
+
+    if(editingCardId){
+      var card = findCard(editingCardId);
+      card.title = title;
+      if(!card.parentId){
+        var newCol = document.getElementById("fColumn").value;
+        if(newCol !== card.columnId){
+          propagateColumn(card.id, newCol);
+          normalizeSiblings(null, newCol);
+        }
+      }
+      card.desc = document.getElementById("fDesc").value.trim();
+      card.priority = getFPriority();
+      card.due = document.getElementById("fDue").value;
+      card.tags = tags;
+    } else {
+      var parentId = presetParentId || null;
+      var colId, maxOrder;
+      if(parentId){
+        var parentCard = findCard(parentId);
+        colId = parentCard.columnId;
+        maxOrder = getChildren(parentId).length;
+      } else {
+        colId = document.getElementById("fColumn").value;
+        maxOrder = getRootCards(colId).length;
+      }
+      state.cards.push({
+        id: uid("card"),
+        parentId: parentId,
+        columnId: colId,
+        title: title,
+        desc: document.getElementById("fDesc").value.trim(),
+        priority: getFPriority(),
+        due: document.getElementById("fDue").value,
+        tags: tags,
+        order: maxOrder
+      });
+    }
+    markDirty();
+    closeModal();
+    render();
+  }
+
+  function deleteCurrentCard(){
+    if(!editingCardId) return;
+    var descIds = getDescendantIds(editingCardId);
+    var msg = descIds.length>0
+      ? "该卡片下有 "+descIds.length+" 张子卡片，确定一并删除吗？"
+      : "确定删除这张卡片吗？";
+    if(!confirm(msg)) return;
+    var toDelete = [editingCardId].concat(descIds);
+    state.cards = state.cards.filter(function(c){return toDelete.indexOf(c.id)===-1;});
+    markDirty();
+    closeModal();
+    render();
+  }
+
+  /* ─── Export / Import (Tauri) ─────── */
+  async function exportJSON(){
+    try {
+      var today = new Date();
+      var stamp = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,"0")+"-"+String(today.getDate()).padStart(2,"0");
+      var savePath = await invoke("plugin:dialog|save", {
+        options: {
+          filters: [{ name: "JSON", extensions: ["json"] }],
+          defaultPath: "kanban-" + stamp + ".json"
+        }
+      });
+      if(!savePath) return;
+      var payload = JSON.stringify(state, null, 2);
+      await invoke("write_external_file", { path: savePath, contents: payload });
+      clearDirty();
+    } catch(e){
+      // If dialog fails (e.g. no backend), fallback to saving in storage dir
+      console.warn("Dialog save failed, using storage fallback:", e);
+      var storagePath = (await getStorageDir()) + "/export_" + formatTimestamp(new Date()) + ".json";
+      var payload = JSON.stringify(state, null, 2);
+      await invoke("write_external_file", { path: storagePath, contents: payload });
+      clearDirty();
+      alert("已保存到应用目录：" + storagePath);
+    }
+  }
+
+  async function importJSON(){
+    var openPath = await invoke("plugin:dialog|open", {
+      options: {
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        multiple: false,
+        directory: false
+      }
+    });
+    if(!openPath) return;
+    try {
+      var content = await invoke("read_external_file", { path: openPath });
+      var data = JSON.parse(content);
+      // Support both raw state and snapshot envelope
+      if(data.board && data.board.columns) data = data.board;
+      if(!data.columns || !data.cards) throw new Error("格式不正确");
+      data.cards.forEach(function(c){
+        if(c.parentId===undefined) c.parentId = null;
+        if(!c.tags) c.tags = [];
+        if(c.order===undefined) c.order = 0;
+      });
+      state = data;
+      activeTags.clear();
+      activeDueBucket = null;
+      clearDirty();
+      markDirty(); // trigger auto-save to history
+      render();
+    } catch(err){
+      alert("导入失败：文件格式不正确。\n" + (err && err.message ? err.message : err));
+    }
+  }
+
+  /* ─── History restore ────────────── */
+  async function showHistory(){
+    var modal = document.getElementById("historyModal");
+    var listEl = document.getElementById("historyList");
+    var pathEl = document.getElementById("historyPath");
+    listEl.innerHTML = '<p class="none-hint">加载中…</p>';
+    modal.classList.remove("hidden");
+
+    getStorageDir().then(function(dir){ pathEl.textContent = "存储位置：" + dir; }).catch(function(){});
+
+    var snapshots;
+    try {
+      snapshots = await invoke("list_history");
+    } catch(err){
+      listEl.innerHTML = '<p class="none-hint">加载历史失败：' + (err && err.message ? err.message : err) + '</p>';
+      return;
+    }
+    if(!snapshots || !snapshots.length){
+      listEl.innerHTML = '<p class="none-hint">暂无历史版本</p>';
+      return;
+    }
+
+    var sorted = snapshots.slice().reverse(); // newest first
+    listEl.innerHTML = "";
+    sorted.forEach(function(entry, i){
+      var row = document.createElement("div");
+      row.className = "history-row" + (i===0 ? " current" : "");
+      var dt = (entry.timestamp || "").slice(0,19).replace("T"," ");
+      var meta = document.createElement("span");
+      meta.className = "history-meta";
+      meta.textContent = dt + (i===0 ? "（最新）" : "");
+      var badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "  " + entry.columns + " 栏目 · " + entry.cards + " 卡片";
+      meta.appendChild(badge);
+
+      var btn = document.createElement("button");
+      btn.className = "small";
+      btn.textContent = "恢复";
+      btn.addEventListener("click", function(){ restoreHistoryEntry(entry); });
+
+      row.appendChild(meta);
+      row.appendChild(btn);
+      listEl.appendChild(row);
+    });
+  }
+
+  async function restoreHistoryEntry(entry){
+    if(!confirm("确定恢复到 " + (entry.timestamp||"").slice(0,19).replace("T"," ") + " 的版本吗？当前未保存的更改将会丢失。")) return;
+    try {
+      var raw = await invoke("load_history_entry", { filename: entry.filename });
+      var board = JSON.parse(raw);
+      if(!board || !board.columns || !board.cards) throw new Error("数据格式不正确");
+      state = board;
+      activeTags.clear();
+      activeDueBucket = null;
+      document.getElementById("historyModal").classList.add("hidden");
+      markDirty();
+      render();
+      await saveState(); // record the restore as a new history entry too
+      alert("已恢复到所选版本");
+    } catch(err){
+      alert("恢复失败：" + (err && err.message ? err.message : err));
+    }
+  }
+
+  /* ---------- Zoom (Ctrl+scroll, like a browser) ---------- */
+  var ZOOM_MIN = 0.5, ZOOM_MAX = 2.0, ZOOM_STEP = 0.1;
+  var zoomLevel = parseFloat(localStorage.getItem("kanban_zoom")) || 1.0;
+
+  function applyZoom(){
+    document.documentElement.style.zoom = zoomLevel;
+    try { localStorage.setItem("kanban_zoom", String(zoomLevel)); } catch(_){}
+  }
+
+  function setupZoom(){
+    applyZoom();
+    window.addEventListener("wheel", function(e){
+      if(!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      zoomLevel += (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+      zoomLevel = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoomLevel));
+      zoomLevel = Math.round(zoomLevel * 100) / 100;
+      applyZoom();
+    }, { passive: false });
+
+    window.addEventListener("keydown", function(e){
+      if(!(e.ctrlKey || e.metaKey)) return;
+      if(e.key === "0"){ e.preventDefault(); zoomLevel = 1.0; applyZoom(); }
+      else if(e.key === "=" || e.key === "+"){ e.preventDefault(); zoomLevel = Math.min(ZOOM_MAX, zoomLevel + ZOOM_STEP); applyZoom(); }
+      else if(e.key === "-"){ e.preventDefault(); zoomLevel = Math.max(ZOOM_MIN, zoomLevel - ZOOM_STEP); applyZoom(); }
+    });
+  }
+
+  /* ---------- Filter bars collapse/expand ---------- */
+  var filtersCollapsed = localStorage.getItem("kanban_filters_collapsed") === "1";
+
+  function applyFilterBarsCollapsed(){
+    var wrap = document.getElementById("filterBarsWrap");
+    var toggle = document.getElementById("btnToggleFilters");
+    var label = document.getElementById("filterToggleLabel");
+    wrap.classList.toggle("hidden", filtersCollapsed);
+    toggle.classList.toggle("collapsed", filtersCollapsed);
+    label.textContent = filtersCollapsed ? "展开筛选栏" : "收起筛选栏";
+  }
+
+  function setupFilterToggle(){
+    applyFilterBarsCollapsed();
+    document.getElementById("btnToggleFilters").addEventListener("click", function(){
+      filtersCollapsed = !filtersCollapsed;
+      try { localStorage.setItem("kanban_filters_collapsed", filtersCollapsed ? "1" : "0"); } catch(_){}
+      applyFilterBarsCollapsed();
+    });
+  }
+
+  /* ---------- Wire up ---------- */
+  async function init(){
+    setupZoom();
+    setupFilterToggle();
+    await loadFromDisk();
+    render();
+
+    document.getElementById("btnNewCard").addEventListener("click", function(){ openCardModal(null, null, null); });
+    document.getElementById("btnNewColumn").addEventListener("click", function(){
+      var name = prompt("新栏目名称：", "新栏目");
+      if(!name) return;
+      state.columns.push({id:uid("col"), name:name.trim(), color:COLORS[state.columns.length % COLORS.length], width:320});
+      markDirty(); render();
+    });
+    document.getElementById("btnCancel").addEventListener("click", closeModal);
+    document.getElementById("btnSave").addEventListener("click", saveCardFromModal);
+    document.getElementById("btnDeleteCard").addEventListener("click", deleteCurrentCard);
+    document.getElementById("cardModal").addEventListener("mousedown", function(e){
+      if(e.target.id==="cardModal") closeModal();
+    });
+    document.addEventListener("keydown", function(e){
+      if(e.key==="Escape" && !document.getElementById("cardModal").classList.contains("hidden")) closeModal();
+      if(e.key==="Escape" && !document.getElementById("historyModal").classList.contains("hidden")){
+        document.getElementById("historyModal").classList.add("hidden");
+      }
+    });
+
+    document.getElementById("searchInput").addEventListener("input", renderBoard);
+    document.getElementById("hideEmptyCols").addEventListener("change", renderBoard);
+
+    // Board-level column reorder (drag & drop)
+    var board = document.getElementById("board");
+    board.addEventListener("dragenter", function(e){ e.preventDefault(); });
+    board.addEventListener("dragover", function(e){
+      e.preventDefault();
+      if(!e.dataTransfer.types) return;
+      var hasCol = Array.prototype.indexOf.call(e.dataTransfer.types, "text/col-id") !== -1;
+      if(!hasCol || !draggedColId) return;
+
+      var cols = this.querySelectorAll(".column:not(.dragging)");
+      var insertIdx = cols.length;
+      for(var i = 0; i < cols.length; i++){
+        var box = cols[i].getBoundingClientRect();
+        if(e.clientX < box.left + box.width / 2){ insertIdx = i; break; }
+      }
+
+      var ph = this.querySelector(".col-drop-placeholder");
+      if(!ph){ ph = document.createElement("div"); ph.className = "col-drop-placeholder"; this.appendChild(ph); }
+      var draggedCol = null;
+      state.columns.forEach(function(c){ if(c.id === draggedColId) draggedCol = c; });
+      ph.style.width = (draggedCol ? draggedCol.width || 320 : 320) + "px";
+      if(cols[0]) ph.style.height = cols[0].offsetHeight + "px";
+      if(insertIdx < cols.length){ this.insertBefore(ph, cols[insertIdx]); }
+      else { this.appendChild(ph); }
+      ph.classList.add("show");
+      this.dataset.dropIdx = insertIdx;
+    });
+    board.addEventListener("drop", function(e){
+      e.preventDefault();
+      var ph = this.querySelector(".col-drop-placeholder");
+      if(ph) ph.classList.remove("show");
+      if(!draggedColId) return;
+      var toIdx = parseInt(this.dataset.dropIdx);
+      if(isNaN(toIdx)) return;
+      var fromIdx = -1;
+      state.columns.forEach(function(c, i){if(c.id === draggedColId) fromIdx = i;});
+      if(fromIdx === -1 || fromIdx === toIdx) return;
+      var col = state.columns[fromIdx];
+      var newCols = state.columns.filter(function(c){ return c.id !== draggedColId; });
+      newCols.splice(toIdx, 0, col);
+      state.columns = newCols;
+      delete this.dataset.dropIdx;
+      draggedColId = null;
+      markDirty();
+      renderBoard();
+    });
+    document.addEventListener("dragend", function(){
+      var ph = board.querySelector(".col-drop-placeholder");
+      if(ph) ph.classList.remove("show");
+    });
+
+    // Export / Import (async)
+    document.getElementById("btnExport").addEventListener("click", async function(){
+      try { await exportJSON(); } catch(e){ alert("导出失败：" + (e && e.message ? e.message : e)); }
+    });
+    document.getElementById("btnImport").addEventListener("click", async function(){
+      try { await importJSON(); } catch(e){ alert("导入失败：" + (e && e.message ? e.message : e)); }
+    });
+    document.getElementById("btnHistory").addEventListener("click", async function(){
+      try { await showHistory(); } catch(e){ alert("历史恢复失败：" + (e && e.message ? e.message : e)); }
+    });
+    document.getElementById("btnHistoryClose").addEventListener("click", function(){
+      document.getElementById("historyModal").classList.add("hidden");
+    });
+    document.getElementById("historyModal").addEventListener("mousedown", function(e){
+      if(e.target.id==="historyModal") document.getElementById("historyModal").classList.add("hidden");
+    });
+
+    document.getElementById("btnClear").addEventListener("click", function(){
+      if(!confirm("确定清空整个看板吗？此操作不可撤销（建议先导出备份）。")) return;
+      state = {columns:[{id:uid("col"),name:"待办",color:COLORS[0],width:320}], cards:[]};
+      activeTags.clear();
+      activeDueBucket = null;
+      markDirty(); render();
+    });
+
+    window.addEventListener("beforeunload", function(e){
+      if(dirty){
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+  }
+
+  init();
+})();
+</script>
+<!-- Built by Lin with help from DeepSeek & Claude -->
+</body>
+</html>
