@@ -300,7 +300,38 @@
     min-height:38px;
   }
   .card-children.drag-over{background:rgba(47,93,138,0.08);}
-  .card-children .empty-hint{margin-top:0;}
+
+  /* Center drop zone for cards without children. Invisible at rest;
+     revealed only while a card drag is in progress and the pointer
+     is over this card. 80% width × 65% height of the card, centered. */
+  .card-drop-zone{
+    position:absolute;
+    left:10%;
+    top:17.5%;
+    width:80%;
+    height:65%;
+    z-index:5;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border:2px dashed var(--blue);
+    border-radius:4px;
+    background:rgba(47,93,138,0.08);
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--ink-soft);
+    opacity:0;
+    visibility:hidden;
+    pointer-events:none;
+  }
+  .card-drop-zone span{pointer-events:none;}
+  body.card-dragging .card-drop-zone{
+    visibility:visible;
+    pointer-events:auto;
+    opacity:0;
+  }
+  body.card-dragging .card-drop-zone.drag-over{opacity:1;}
+  .card.dragging .card-drop-zone{visibility:hidden;pointer-events:none;}
 
   /* ---------- Modal ---------- */
   .modal-overlay{
@@ -1061,31 +1092,36 @@
     el.appendChild(actionsDiv);
     el.appendChild(bodyDiv);
 
-    var childrenEl = document.createElement("div");
-    childrenEl.className = "card-children";
-    childrenEl.style.setProperty("--col-color", colColor);
     var children = getChildren(card.id);
     if(children.length===0){
-      var hint = document.createElement("div");
-      hint.className = "empty-hint";
-      hint.textContent = "拖拽卡片到此处，使其成为子卡片";
-      childrenEl.appendChild(hint);
+      var dropZone = document.createElement("div");
+      dropZone.className = "card-drop-zone";
+      var dropLabel = document.createElement("span");
+      dropLabel.textContent = "拖放为子卡片";
+      dropZone.appendChild(dropLabel);
+      el.appendChild(dropZone);
+      attachDropZone(dropZone, card.id, card.columnId);
     } else {
+      var childrenEl = document.createElement("div");
+      childrenEl.className = "card-children";
+      childrenEl.style.setProperty("--col-color", colColor);
       children.forEach(function(ch){
         childrenEl.appendChild(buildCardEl(ch, colColor, query, filtering));
       });
+      el.appendChild(childrenEl);
+      attachDropZone(childrenEl, card.id, card.columnId);
     }
-    el.appendChild(childrenEl);
-    attachDropZone(childrenEl, card.id, card.columnId);
 
     el.addEventListener("dragstart", function(e){
       e.stopPropagation();
       e.dataTransfer.setData("text/card-id", card.id);
       el.classList.add("dragging");
+      document.body.classList.add("card-dragging");
     });
     el.addEventListener("dragend", function(e){
       e.stopPropagation();
       el.classList.remove("dragging");
+      document.body.classList.remove("card-dragging");
     });
     el.addEventListener("dblclick", function(e){
       e.stopPropagation();
@@ -1502,6 +1538,7 @@
     document.addEventListener("dragend", function(){
       var ph = board.querySelector(".col-drop-placeholder");
       if(ph) ph.classList.remove("show");
+      document.body.classList.remove("card-dragging");
     });
 
     // Export / Import (async)

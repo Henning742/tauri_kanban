@@ -56,8 +56,8 @@ npm run tauri build
 Push a version tag to trigger the cross-platform release workflow:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The workflow builds Windows and Linux bundles and creates a GitHub Release. Prebuilt versions can be downloaded from the **Assets** section of each release.
