@@ -8,6 +8,29 @@ An offline-first kanban board built with **Tauri 2** and **vanilla HTML/CSS/JS**
 
 > 中文简介见下方：[中文说明](#中文说明)
 
+## Changelog
+
+### v1.0.3
+
+- **Widget mode**: a compact portrait layout for keeping the board as a small always-visible panel
+- **Per-mode geometry**: normal and widget modes remember their own size and position separately across switches and restarts
+- **Always on top**: an independent toolbar toggle that works in both normal and widget modes
+- **Translucent widget**: widget mode renders with an overall ~50% opacity over the desktop
+- **Per-mode zoom**: normal and widget modes keep independent zoom levels
+- Fixed window size/position drift caused by mixing outer and inner window dimensions
+
+### v1.0.2
+
+- Improved the drag-and-drop zone
+
+### v1.0.1
+
+- Fixed zooming out with Ctrl/Cmd + scroll
+
+### v1.0.0
+
+- Initial release
+
 ## Features
 
 - **Columns**: add, rename, delete, reorder by drag-and-drop, and resize by dragging the column edge
@@ -18,8 +41,10 @@ An offline-first kanban board built with **Tauri 2** and **vanilla HTML/CSS/JS**
 - **Auto-save & dirty indicator**: changes are auto-saved after a short pause, with an unsaved-changes indicator
 - **History**: keeps up to 50 timestamped snapshots; restore any version from the history modal
 - **Import / Export JSON**: uses native file dialogs, with a fallback to the app storage directory
-- **Zoom**: Ctrl/Cmd + scroll or `+` / `-` / `0` keys (50% – 200%)
-- **Window state**: remembers size, position, and maximized state across launches
+- **Widget mode**: a compact portrait layout that stays on top (with an independent always-on-top toggle), translucent background, and its own geometry and zoom
+- **Zoom**: Ctrl/Cmd + scroll or `+` / `-` / `0` keys (50% – 200%), saved separately per mode
+- **Window state**: remembers size, position, and maximized state per mode across launches
+- **Always on top**: an optional pin that works in both normal and widget modes
 - **Offline-first**: fully local, no network required
 
 ## Tech Stack
@@ -110,10 +135,12 @@ All data is stored locally in a `kanban-data` folder next to the executable:
 - 卡片支持标题、描述、优先级、截止日期、标签
 - 子卡片：把卡片拖到另一张卡片上即可成为其子卡片，父卡片移动时子卡片跟随
 - 搜索、标签筛选、剩余时间筛选、隐藏空栏目
+- 小组件模式：紧凑的竖向布局，支持窗口置顶、半透明背景，并单独记忆窗口位置与缩放
+- 窗口置顶：可在普通模式与小组件模式下独立开关
 - 自动保存，并保留最多 50 份历史快照，可随时恢复
 - JSON 导入/导出（使用系统文件对话框）
-- Ctrl/Cmd + 滚轮或 `+` / `-` / `0` 缩放界面
-- 记住窗口大小、位置与最大化状态
+- Ctrl/Cmd + 滚轮或 `+` / `-` / `0` 缩放界面（普通模式与小组件模式分别记忆）
+- 分别记住普通模式与小组件模式的窗口大小、位置与最大化状态
 
 ### 快速开始
 
