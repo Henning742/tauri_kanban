@@ -378,6 +378,21 @@
      "days left" (due) chip visible. */
   body.widget-mode .card .card-tags{display:none;}
 
+  /* Widget mode is portrait/narrow, so let the card editor use almost the
+     whole window width instead of the normal 80vw. */
+  body.widget-mode .modal{
+    width:95vw;
+    max-width:95vw;
+  }
+
+  /* Widget mode is a minimal always-visible panel: hide the save-state
+     indicator, the JSON import/export buttons, and the destructive
+     "clear board" button to keep the toolbar focused on day-to-day use. */
+  body.widget-mode .dirty,
+  body.widget-mode #btnImport,
+  body.widget-mode #btnExport,
+  body.widget-mode #btnClear{display:none !important;}
+
   /* ---------- Modal ---------- */
   .modal-overlay{
     position:fixed;inset:0;background:rgba(36,51,63,0.45);
@@ -426,8 +441,8 @@
     color:var(--ink);
   }
   .modal textarea{resize:vertical;min-height:56px;font-family:var(--sans);}
-  .modal .row{display:flex;gap:12px;}
-  .modal .row > div{flex:1;}
+  .modal .row{display:flex;flex-wrap:wrap;gap:12px;}
+  .modal .row > div{flex:1;min-width:160px;}
   .priority-radio-group{display:flex;gap:14px;align-items:center;padding:8px 0 2px;}
   .priority-radio-group .radio-option{
     display:inline-flex;align-items:center;gap:5px;
@@ -915,6 +930,11 @@
     return textOk && tagOk && dueOk;
   }
 
+  function columnMatchesQuery(col, query){
+    if(!query) return false;
+    return (col.name||"").toLowerCase().indexOf(query) > -1;
+  }
+
   function renderBoard(){
     var board = document.getElementById("board");
     board.innerHTML = "";
@@ -991,6 +1011,7 @@
       var list = document.createElement("div");
       list.className = "card-list";
       var roots = getRootCards(col.id);
+      var colMatch = columnMatchesQuery(col, query);
 
       if(roots.length===0){
         var hint = document.createElement("div");
@@ -999,7 +1020,7 @@
         list.appendChild(hint);
       } else {
         roots.forEach(function(card){
-          list.appendChild(buildCardEl(card, col.color, query, filtering));
+          list.appendChild(buildCardEl(card, col.color, query, filtering, colMatch));
         });
       }
 
@@ -1008,7 +1029,7 @@
 
       // Hide column if toggle is on and no cards match current filter
       if(filtering && document.getElementById("hideEmptyCols").checked){
-        var hasMatch = state.cards.some(function(c){
+        var hasMatch = colMatch || state.cards.some(function(c){
           return c.columnId === col.id && cardMatchesFilter(c, query);
         });
         if(!hasMatch) colEl.classList.add("hidden");
@@ -1098,7 +1119,7 @@
     return "#E8AFA3";
   }
 
-  function buildCardEl(card, colColor, query, filtering){
+  function buildCardEl(card, colColor, query, filtering, colMatch){
     var el = document.createElement("div");
     el.className = "card";
     el.draggable = true;
@@ -1113,7 +1134,7 @@
 
     var bodyDiv = document.createElement("div");
     bodyDiv.className = "card-body";
-    if(filtering && !cardMatchesFilter(card, query)) bodyDiv.classList.add("dimmed");
+    if(filtering && !colMatch && !cardMatchesFilter(card, query)) bodyDiv.classList.add("dimmed");
     bodyDiv.innerHTML =
       '<div class="card-header">'+
         '<span class="priority-dot '+card.priority+'"></span>'+
@@ -1159,7 +1180,7 @@
       childrenEl.className = "card-children";
       childrenEl.style.setProperty("--col-color", colColor);
       children.forEach(function(ch){
-        childrenEl.appendChild(buildCardEl(ch, colColor, query, filtering));
+        childrenEl.appendChild(buildCardEl(ch, colColor, query, filtering, colMatch));
       });
       el.appendChild(childrenEl);
       attachDropZone(childrenEl, card.id, card.columnId);

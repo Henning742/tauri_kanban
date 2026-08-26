@@ -10,12 +10,19 @@ An offline-first kanban board built with **Tauri 2** and **vanilla HTML/CSS/JS**
 
 ## Changelog
 
+### v1.0.4
+
+- **Widget-mode editor width**: the card editor expands to 95% of the window in widget mode to fit the narrow portrait layout
+- **Wrapping editor fields**: priority, column, and due date now wrap onto additional lines instead of overflowing when space is tight
+- **Minimal widget toolbar**: widget mode hides the dirty indicator, JSON import/export, and clear-board button
+- **Column search**: the search box now also matches column titles
+- **Docs**: removed the "translucent widget" mention, which was never implemented
+
 ### v1.0.3
 
 - **Widget mode**: a compact portrait layout for keeping the board as a small always-visible panel
 - **Per-mode geometry**: normal and widget modes remember their own size and position separately across switches and restarts
 - **Always on top**: an independent toolbar toggle that works in both normal and widget modes
-- **Translucent widget**: widget mode renders with an overall ~50% opacity over the desktop
 - **Per-mode zoom**: normal and widget modes keep independent zoom levels
 - Fixed window size/position drift caused by mixing outer and inner window dimensions
 
@@ -41,7 +48,7 @@ An offline-first kanban board built with **Tauri 2** and **vanilla HTML/CSS/JS**
 - **Auto-save & dirty indicator**: changes are auto-saved after a short pause, with an unsaved-changes indicator
 - **History**: keeps up to 50 timestamped snapshots; restore any version from the history modal
 - **Import / Export JSON**: uses native file dialogs, with a fallback to the app storage directory
-- **Widget mode**: a compact portrait layout that stays on top (with an independent always-on-top toggle), translucent background, and its own geometry and zoom
+- **Widget mode**: a compact portrait layout that stays on top (with an independent always-on-top toggle), and its own geometry and zoom
 - **Zoom**: Ctrl/Cmd + scroll or `+` / `-` / `0` keys (50% – 200%), saved separately per mode
 - **Window state**: remembers size, position, and maximized state per mode across launches
 - **Always on top**: an optional pin that works in both normal and widget modes
@@ -135,7 +142,7 @@ All data is stored locally in a `kanban-data` folder next to the executable:
 - 卡片支持标题、描述、优先级、截止日期、标签
 - 子卡片：把卡片拖到另一张卡片上即可成为其子卡片，父卡片移动时子卡片跟随
 - 搜索、标签筛选、剩余时间筛选、隐藏空栏目
-- 小组件模式：紧凑的竖向布局，支持窗口置顶、半透明背景，并单独记忆窗口位置与缩放
+- 小组件模式：紧凑的竖向布局，支持窗口置顶，并单独记忆窗口位置与缩放
 - 窗口置顶：可在普通模式与小组件模式下独立开关
 - 自动保存，并保留最多 50 份历史快照，可随时恢复
 - JSON 导入/导出（使用系统文件对话框）
