@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use tauri::Manager;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 // ── Storage layout ─────────────────────────────────────────────
 // <exe_dir>/kanban-data/
@@ -157,8 +160,12 @@ fn save_snapshot(
     Ok(index.snapshots)
 }
 
-#[derive(Serialize, Deserialize)]
-struct WindowState {
+/// Portrait size used while the app is in widget mode (logical pixels).
+const WIDGET_WINDOW_WIDTH: f64 = 380.0;
+const WIDGET_WINDOW_HEIGHT: f64 = 680.0;
+
+#[derive(Clone, Copy, PartialEq)]
+struct WindowGeometry {
     width: u32,
     height: u32,
     x: i32,
@@ -166,32 +173,299 @@ struct WindowState {
     maximized: bool,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct WindowState {
+    // Normal-mode geometry. These flat field names are kept so existing
+    // window-state.json files keep working without migration.
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    maximized: bool,
+    // Widget-mode geometry (physical pixels). A zero width/height means the
+    // widget geometry has not been saved yet, in which case a portrait-sized
+    // default is used the first time widget mode is entered.
+    #[serde(default)]
+    widget_width: u32,
+    #[serde(default)]
+    widget_height: u32,
+    #[serde(default)]
+    widget_x: i32,
+    #[serde(default)]
+    widget_y: i32,
+    #[serde(default)]
+    widget_maximized: bool,
+    #[serde(default)]
+    widget_mode: bool,
+    #[serde(default)]
+    always_on_top: bool,
+}
+
+impl WindowState {
+    fn normal_geometry(&self) -> WindowGeometry {
+        WindowGeometry {
+            width: self.width,
+            height: self.height,
+            x: self.x,
+            y: self.y,
+            maximized: self.maximized,
+        }
+    }
+
+    fn set_normal_geometry(&mut self, geometry: WindowGeometry) {
+        self.width = geometry.width;
+        self.height = geometry.height;
+        self.x = geometry.x;
+        self.y = geometry.y;
+        self.maximized = geometry.maximized;
+    }
+
+    fn widget_geometry(&self) -> Option<WindowGeometry> {
+        if self.widget_width == 0 || self.widget_height == 0 {
+            return None;
+        }
+        Some(WindowGeometry {
+            width: self.widget_width,
+            height: self.widget_height,
+            x: self.widget_x,
+            y: self.widget_y,
+            maximized: self.widget_maximized,
+        })
+    }
+
+    fn set_widget_geometry(&mut self, geometry: WindowGeometry) {
+        self.widget_width = geometry.width;
+        self.widget_height = geometry.height;
+        self.widget_x = geometry.x;
+        self.widget_y = geometry.y;
+        self.widget_maximized = geometry.maximized;
+    }
+}
+
+fn fallback_window_state() -> WindowState {
+    WindowState {
+        width: 800,
+        height: 600,
+        x: 0,
+        y: 0,
+        maximized: false,
+        widget_width: 0,
+        widget_height: 0,
+        widget_x: 0,
+        widget_y: 0,
+        widget_maximized: false,
+        widget_mode: false,
+        always_on_top: false,
+    }
+}
+
+static WIDGET_MODE: AtomicBool = AtomicBool::new(false);
+static ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(false);
+static SESSION_NORMAL_GEOMETRY: OnceLock<Mutex<Option<WindowGeometry>>> = OnceLock::new();
+static SESSION_WIDGET_GEOMETRY: OnceLock<Mutex<Option<WindowGeometry>>> = OnceLock::new();
+
+fn session_normal_geometry() -> &'static Mutex<Option<WindowGeometry>> {
+    SESSION_NORMAL_GEOMETRY.get_or_init(|| Mutex::new(None))
+}
+
+fn session_widget_geometry() -> &'static Mutex<Option<WindowGeometry>> {
+    SESSION_WIDGET_GEOMETRY.get_or_init(|| Mutex::new(None))
+}
+
 fn window_state_path() -> Result<PathBuf, String> {
     Ok(data_dir()?.join("window-state.json"))
 }
 
-fn apply_initial_window_state(window: &tauri::WebviewWindow) {
-    if let Ok(path) = window_state_path() {
-        if let Ok(raw) = fs::read_to_string(&path) {
-            if let Ok(state) = serde_json::from_str::<WindowState>(&raw) {
-                if state.maximized {
-                    let _ = window.maximize();
-                } else {
-                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-                        width: state.width,
-                        height: state.height,
-                    }));
-                    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                        x: state.x,
-                        y: state.y,
-                    }));
-                }
-                return;
-            }
-        }
+fn read_saved_window_state() -> Option<WindowState> {
+    let path = window_state_path().ok()?;
+    let raw = fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<WindowState>(&raw).ok()
+}
+
+fn current_window_geometry(window: &tauri::WebviewWindow) -> Option<WindowGeometry> {
+    // Capture the client-area (inner) size: `apply_geometry` restores it with
+    // `set_size`, which maps to the window's inner size. Capturing the outer
+    // size here made the window grow by the title-bar/border delta on every
+    // mode switch or restart. Position stays outer, matching `set_position`.
+    let size = window.inner_size().ok()?;
+    let pos = window.outer_position().ok()?;
+    Some(WindowGeometry {
+        width: size.width,
+        height: size.height,
+        x: pos.x,
+        y: pos.y,
+        maximized: window.is_maximized().unwrap_or(false),
+    })
+}
+
+fn apply_geometry(window: &tauri::WebviewWindow, geometry: WindowGeometry) {
+    apply_geometry_in_order(window, geometry, true);
+}
+
+/// Applies a saved geometry to the window, issuing the async size/position
+/// requests in the given order. The requests are processed asynchronously by
+/// the window manager, and resizing a window can move it (and vice versa), so
+/// the last request "wins" where the window finally lands.
+fn apply_geometry_in_order(
+    window: &tauri::WebviewWindow,
+    geometry: WindowGeometry,
+    size_first: bool,
+) {
+    if geometry.maximized {
+        let _ = window.maximize();
+        return;
     }
 
-    // No saved state yet (first launch): size to ~80% of the current monitor, centered.
+    let set_size = || {
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: geometry.width,
+            height: geometry.height,
+        }));
+    };
+    let set_position = || {
+        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: geometry.x,
+            y: geometry.y,
+        }));
+    };
+
+    if size_first {
+        set_size();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        set_position();
+    } else {
+        set_position();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        set_size();
+    }
+}
+
+/// Applies geometry on a background thread after a short delay, giving the
+/// window-flag changes (skip taskbar / always-on-bottom) and any window-manager
+/// restack a chance to settle first. Applying immediately left the async
+/// resize half-settled, so a quick mode switch could read back a mixed
+/// geometry (new size, old position) and save the wrong value.
+fn apply_geometry_delayed(
+    window: tauri::WebviewWindow,
+    geometry: WindowGeometry,
+    size_first: bool,
+) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        apply_geometry_in_order(&window, geometry, size_first);
+    });
+}
+
+fn apply_widget_window_flags(window: &tauri::WebviewWindow) {
+    // Keeps the window minimizable and in the taskbar. Always-on-top is handled
+    // independently by `apply_always_on_top`, so it can be toggled in both
+    // normal and widget mode.
+    let _ = window.set_minimizable(true);
+    let _ = window.set_skip_taskbar(false);
+    let _ = window.set_always_on_bottom(false);
+    let _ = window.set_always_on_top(ALWAYS_ON_TOP.load(Ordering::SeqCst));
+}
+
+fn apply_always_on_top(window: &tauri::WebviewWindow, enabled: bool) {
+    ALWAYS_ON_TOP.store(enabled, Ordering::SeqCst);
+    let _ = window.set_always_on_top(enabled);
+    let _ = window.set_always_on_bottom(false);
+}
+
+/// First-time widget geometry: a portrait window at the normal window's
+/// position (centered on the current monitor when no usable normal position
+/// exists, e.g. the normal state was maximized).
+fn default_widget_geometry(
+    window: &tauri::WebviewWindow,
+    normal: Option<WindowGeometry>,
+) -> WindowGeometry {
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+    let width = ((WIDGET_WINDOW_WIDTH * scale).round() as u32).max(1);
+    let height = ((WIDGET_WINDOW_HEIGHT * scale).round() as u32).max(1);
+
+    let (x, y) = match normal {
+        Some(normal) if !normal.maximized => (normal.x, normal.y),
+        _ => {
+            if let Ok(Some(monitor)) = window.current_monitor() {
+                let monitor_size = monitor.size();
+                let monitor_pos = monitor.position();
+                (
+                    monitor_pos.x + ((monitor_size.width as i32 - width as i32) / 2),
+                    monitor_pos.y + ((monitor_size.height as i32 - height as i32) / 2),
+                )
+            } else {
+                (0, 0)
+            }
+        }
+    };
+
+    WindowGeometry {
+        width,
+        height,
+        x,
+        y,
+        maximized: false,
+    }
+}
+
+/// Returns the widget geometry the window is currently showing. When the
+/// window geometry is still the normal-mode geometry (the async resize has
+/// not been applied yet) and an intended widget geometry exists, prefer the
+/// intended one.
+fn capture_widget_geometry(window: &tauri::WebviewWindow) -> Option<WindowGeometry> {
+    let actual = current_window_geometry(window);
+    let intended = session_widget_geometry()
+        .lock()
+        .ok()
+        .and_then(|guard| *guard);
+    let normal = session_normal_geometry()
+        .lock()
+        .ok()
+        .and_then(|guard| *guard);
+
+    match (actual, intended, normal) {
+        (Some(actual), Some(intended), Some(normal))
+            if actual == normal && intended != normal =>
+        {
+            Some(intended)
+        }
+        (Some(actual), _, _) => Some(actual),
+        (None, intended, _) => intended,
+    }
+}
+
+fn write_window_state(state: WindowState) {
+    if let Ok(path) = window_state_path() {
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&state) {
+            let _ = fs::write(&path, json);
+        }
+    }
+}
+
+/// Writes window-state.json without reading the on-screen geometry. A `None`
+/// geometry leaves that section untouched, which lets us persist a known
+/// normal/widget geometry before the async window resize has settled.
+fn persist_window_state(
+    normal: Option<WindowGeometry>,
+    widget: Option<WindowGeometry>,
+    widget_mode: bool,
+) {
+    let mut state = read_saved_window_state().unwrap_or_else(fallback_window_state);
+    if let Some(normal) = normal {
+        state.set_normal_geometry(normal);
+    }
+    if let Some(widget) = widget {
+        state.set_widget_geometry(widget);
+    }
+    state.widget_mode = widget_mode;
+    state.always_on_top = ALWAYS_ON_TOP.load(Ordering::SeqCst);
+    write_window_state(state);
+}
+
+fn apply_fallback_window_geometry(window: &tauri::WebviewWindow) {
     if let Ok(Some(monitor)) = window.current_monitor() {
         let size = monitor.size();
         let target_w = (size.width as f64 * 0.8) as u32;
@@ -204,32 +478,140 @@ fn apply_initial_window_state(window: &tauri::WebviewWindow) {
     }
 }
 
-fn save_window_state(window: &tauri::WebviewWindow) {
-    let maximized = window.is_maximized().unwrap_or(false);
-    let size = window.outer_size().unwrap_or(tauri::PhysicalSize {
-        width: 800,
-        height: 600,
-    });
-    let pos = window
-        .outer_position()
-        .unwrap_or(tauri::PhysicalPosition { x: 0, y: 0 });
-
-    let state = WindowState {
-        width: size.width,
-        height: size.height,
-        x: pos.x,
-        y: pos.y,
-        maximized,
-    };
-
-    if let Ok(path) = window_state_path() {
-        if let Some(dir) = path.parent() {
-            let _ = fs::create_dir_all(dir);
+fn apply_initial_window_state(window: &tauri::WebviewWindow) {
+    if let Some(state) = read_saved_window_state() {
+        let normal = state.normal_geometry();
+        WIDGET_MODE.store(state.widget_mode, Ordering::SeqCst);
+        apply_always_on_top(window, state.always_on_top);
+        apply_widget_window_flags(window);
+        if state.widget_mode {
+            let widget = state
+                .widget_geometry()
+                .unwrap_or_else(|| default_widget_geometry(window, Some(normal)));
+            apply_geometry(window, widget);
+        } else {
+            apply_geometry(window, normal);
         }
-        if let Ok(json) = serde_json::to_string_pretty(&state) {
-            let _ = fs::write(&path, json);
+        return;
+    }
+
+    // No saved state yet (first launch): size to ~80% of the current monitor, centered.
+    WIDGET_MODE.store(false, Ordering::SeqCst);
+    ALWAYS_ON_TOP.store(false, Ordering::SeqCst);
+    apply_fallback_window_geometry(window);
+}
+
+fn save_window_state(window: &tauri::WebviewWindow) {
+    let widget_mode = WIDGET_MODE.load(Ordering::SeqCst);
+
+    if widget_mode {
+        let normal = session_normal_geometry()
+            .lock()
+            .ok()
+            .and_then(|guard| *guard)
+            .or_else(|| read_saved_window_state().map(|state| state.normal_geometry()));
+        let widget = capture_widget_geometry(window);
+        persist_window_state(normal, widget, true);
+    } else {
+        // Normal mode: the on-screen window is authoritative, and previously
+        // saved widget geometry is preserved untouched.
+        persist_window_state(current_window_geometry(window), None, false);
+    }
+}
+
+/// Enables/disables widget mode. Both modes remember their own position and
+/// size across switches and restarts.
+#[tauri::command]
+fn set_widget_mode(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+
+    if enabled == WIDGET_MODE.load(Ordering::SeqCst) {
+        return Ok(enabled);
+    }
+
+    if enabled {
+        // Remember the current normal-mode geometry.
+        let normal = current_window_geometry(&window)
+            .or_else(|| read_saved_window_state().map(|state| state.normal_geometry()));
+        if let Some(normal) = normal {
+            if let Ok(mut guard) = session_normal_geometry().lock() {
+                *guard = Some(normal);
+            }
+        }
+
+        // Restore the saved widget geometry, or create the default portrait one.
+        let widget = read_saved_window_state()
+            .and_then(|state| state.widget_geometry())
+            .unwrap_or_else(|| default_widget_geometry(&window, normal));
+        if let Ok(mut guard) = session_widget_geometry().lock() {
+            *guard = Some(widget);
+        }
+
+        WIDGET_MODE.store(true, Ordering::SeqCst);
+        apply_widget_window_flags(&window);
+        let _ = window.unmaximize();
+
+        // Persist with the known geometries instead of the still-settling window.
+        persist_window_state(normal, Some(widget), true);
+
+        // Entering widget mode: delay, then resize before positioning so the
+        // window shrinks around its saved top-left corner.
+        apply_geometry_delayed(window.clone(), widget, true);
+    } else {
+        let normal = session_normal_geometry()
+            .lock()
+            .ok()
+            .and_then(|guard| *guard)
+            .or_else(|| read_saved_window_state().map(|state| state.normal_geometry()));
+
+        // Capture the widget geometry before the normal geometry is restored.
+        let widget = capture_widget_geometry(&window);
+        if let Some(widget) = widget {
+            if let Ok(mut guard) = session_widget_geometry().lock() {
+                *guard = Some(widget);
+            }
+        }
+
+        WIDGET_MODE.store(false, Ordering::SeqCst);
+        persist_window_state(normal, widget, false);
+
+        apply_widget_window_flags(&window);
+        if let Some(normal) = normal {
+            // Returning to normal mode: delay, then position before resizing.
+            apply_geometry_delayed(window.clone(), normal, false);
+        } else {
+            apply_fallback_window_geometry(&window);
         }
     }
+
+    Ok(enabled)
+}
+
+#[tauri::command]
+fn get_widget_mode() -> bool {
+    WIDGET_MODE.load(Ordering::SeqCst)
+}
+
+/// Toggles always-on-top independently of widget mode. Applies to both normal
+/// and widget mode and persists across restarts.
+#[tauri::command]
+fn set_always_on_top(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    apply_always_on_top(&window, enabled);
+
+    // Persist the flag without disturbing the geometry currently in the file.
+    persist_window_state(None, None, WIDGET_MODE.load(Ordering::SeqCst));
+
+    Ok(enabled)
+}
+
+#[tauri::command]
+fn get_always_on_top() -> bool {
+    ALWAYS_ON_TOP.load(Ordering::SeqCst)
 }
 
 #[tauri::command]
@@ -274,6 +656,10 @@ pub fn run() {
             save_snapshot,
             read_external_file,
             write_external_file,
+            set_widget_mode,
+            get_widget_mode,
+            set_always_on_top,
+            get_always_on_top,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

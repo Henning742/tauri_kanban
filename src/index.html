@@ -333,6 +333,51 @@
   body.card-dragging .card-drop-zone.drag-over{opacity:1;}
   .card.dragging .card-drop-zone{visibility:hidden;pointer-events:none;}
 
+  /* ---------- Widget mode (compact vertical layout) ---------- */
+  body.widget-mode .toolbar{
+    padding:5px 8px;
+    gap:6px;
+    max-height:none;
+    overflow-y:visible;
+  }
+  body.widget-mode .toolbar button{padding:4px 8px;font-size:11.5px;}
+  body.widget-mode .toolbar input#searchInput{
+    min-width:120px;
+    font-size:11.5px;
+    padding:5px 8px;
+  }
+  body.widget-mode .hide-empty-toggle{font-size:10px;gap:3px;}
+  body.widget-mode .dirty{font-size:10.5px;}
+  body.widget-mode .tagbar{padding:5px 8px;gap:4px;}
+  body.widget-mode .filter-toggle-bar{padding:1px 0;}
+
+  /* Portrait board: columns flow top-to-bottom, one column wide. */
+  body.widget-mode .board{
+    flex-direction:column;
+    align-items:stretch;
+    gap:10px;
+    padding:8px;
+  }
+  body.widget-mode .board .column{
+    width:100% !important;
+    min-width:0;
+    flex:0 0 auto;
+  }
+  body.widget-mode .column-head{padding:5px 8px;gap:6px;}
+  body.widget-mode .column-head h3{font-size:12px;}
+  body.widget-mode .col-resize-handle{display:none;}
+
+  body.widget-mode .card-list{padding:6px;gap:6px;min-height:42px;}
+  body.widget-mode .empty-hint{padding:8px 4px;font-size:10.5px;}
+  body.widget-mode .card{border-left-width:9px;padding:8px 8px 6px 12px;}
+  body.widget-mode .card-title{font-size:12.5px;}
+  body.widget-mode .card-desc{font-size:11.5px;margin-top:4px;}
+  body.widget-mode .card-children{margin-top:6px;padding:4px 0 0 4px;gap:6px;}
+
+  /* Widget mode hides the tag chips inside each card, but keeps the
+     "days left" (due) chip visible. */
+  body.widget-mode .card .card-tags{display:none;}
+
   /* ---------- Modal ---------- */
   .modal-overlay{
     position:fixed;inset:0;background:rgba(36,51,63,0.45);
@@ -419,6 +464,8 @@
   <div class="toolbar">
     <button id="btnNewCard" class="primary">+ 新卡片</button>
     <button id="btnNewColumn">+ 新栏目</button>
+    <button id="btnWidgetMode" title="切换为小组件模式（窗口置顶、隐藏任务栏图标、竖向排列栏目）">小组件模式</button>
+    <button id="btnAlwaysOnTop" title="让窗口始终显示在其他窗口之上">窗口置顶</button>
     <input type="text" id="searchInput" placeholder="搜索标题 / 描述…">
     <label class="hide-empty-toggle" title="过滤时隐藏无匹配卡片的栏目">
       <input type="checkbox" id="hideEmptyCols">
@@ -524,6 +571,8 @@
   var draggedColId = null;
   var _saveTimer = null;
   var _storageDirCache = null;
+  var widgetMode = localStorage.getItem("kanban_widget_mode") === "1";
+  var alwaysOnTop = localStorage.getItem("kanban_always_on_top") === "1";
 
   // ─── Tauri runtime guard ─────────────────────
   if (!window.__TAURI__) {
@@ -875,10 +924,12 @@
     state.columns.forEach(function(col){
       var colEl = document.createElement("div");
       colEl.className = "column";
-      colEl.draggable = true;
+      colEl.draggable = !widgetMode;
       colEl.style.setProperty("--col-color", col.color);
       colEl.dataset.colId = col.id;
-      colEl.style.width = (col.width || 320) + "px";
+      // Widget mode ignores the persisted column width: every column fills the
+      // single available column space, so any resize never mutates col.width.
+      colEl.style.width = widgetMode ? "100%" : ((col.width || 320) + "px");
 
       var head = document.createElement("div");
       head.className = "column-head";
@@ -891,49 +942,51 @@
       head.querySelector("h3").textContent = col.name;
       colEl.appendChild(head);
 
-      // Resize handle on right edge of column
-      var resizeHandle = document.createElement("div");
-      resizeHandle.className = "col-resize-handle";
-      colEl.appendChild(resizeHandle);
+      if(!widgetMode){
+        // Resize handle on right edge of column
+        var resizeHandle = document.createElement("div");
+        resizeHandle.className = "col-resize-handle";
+        colEl.appendChild(resizeHandle);
 
-      // Column drag events
-      colEl.addEventListener("dragstart", function(e){
-        e.stopPropagation();
-        e.dataTransfer.setData("text/col-id", col.id);
-        e.dataTransfer.effectAllowed = "move";
-        colEl.classList.add("dragging");
-        draggedColId = col.id;
-      });
-      colEl.addEventListener("dragend", function(e){
-        e.stopPropagation();
-        colEl.classList.remove("dragging");
-        delete board.dataset.dropIdx;
-        draggedColId = null;
-      });
+        // Column drag events
+        colEl.addEventListener("dragstart", function(e){
+          e.stopPropagation();
+          e.dataTransfer.setData("text/col-id", col.id);
+          e.dataTransfer.effectAllowed = "move";
+          colEl.classList.add("dragging");
+          draggedColId = col.id;
+        });
+        colEl.addEventListener("dragend", function(e){
+          e.stopPropagation();
+          colEl.classList.remove("dragging");
+          delete board.dataset.dropIdx;
+          draggedColId = null;
+        });
 
-      // Column resize via mousedown on handle
-      resizeHandle.addEventListener("mousedown", function(ev){
-        ev.preventDefault();
-        ev.stopPropagation();
-        var startX = ev.clientX;
-        var startW = colEl.offsetWidth;
-        function onMove(me){
-          var w = Math.max(180, startW + (me.clientX - startX));
-          colEl.style.width = w + "px";
-          col.width = w;
-          markDirty();
-        }
-        function onUp(){
-          document.removeEventListener("mousemove", onMove);
-          document.removeEventListener("mouseup", onUp);
-          document.body.style.cursor = "";
-          resizeHandle.classList.remove("resizing");
-        }
-        document.addEventListener("mousemove", onMove);
-        document.addEventListener("mouseup", onUp);
-        document.body.style.cursor = "col-resize";
-        resizeHandle.classList.add("resizing");
-      });
+        // Column resize via mousedown on handle
+        resizeHandle.addEventListener("mousedown", function(ev){
+          ev.preventDefault();
+          ev.stopPropagation();
+          var startX = ev.clientX;
+          var startW = colEl.offsetWidth;
+          function onMove(me){
+            var w = Math.max(180, startW + (me.clientX - startX));
+            colEl.style.width = w + "px";
+            col.width = w;
+            markDirty();
+          }
+          function onUp(){
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+            document.body.style.cursor = "";
+            resizeHandle.classList.remove("resizing");
+          }
+          document.addEventListener("mousemove", onMove);
+          document.addEventListener("mouseup", onUp);
+          document.body.style.cursor = "col-resize";
+          resizeHandle.classList.add("resizing");
+        });
+      }
 
       var list = document.createElement("div");
       list.className = "card-list";
@@ -1412,15 +1465,30 @@
 
   /* ---------- Zoom (Ctrl+scroll, like a browser) ---------- */
   var ZOOM_MIN = 0.5, ZOOM_MAX = 2.0, ZOOM_STEP = 0.1;
-  var zoomLevel = parseFloat(localStorage.getItem("kanban_zoom")) || 1.0;
+  var zoomLevel = 1.0;
+
+  // Normal mode and widget mode keep independent zoom levels.
+  function zoomStorageKey(){
+    return widgetMode ? "kanban_zoom_widget" : "kanban_zoom";
+  }
+
+  function loadZoom(){
+    var v = localStorage.getItem(zoomStorageKey());
+    // First time entering widget mode with no saved widget zoom: inherit the
+    // normal-mode zoom so the view doesn't jump back to 100%.
+    if(v === null && widgetMode) v = localStorage.getItem("kanban_zoom");
+    zoomLevel = parseFloat(v) || 1.0;
+    if(!(zoomLevel >= ZOOM_MIN && zoomLevel <= ZOOM_MAX)) zoomLevel = 1.0;
+    applyZoom();
+  }
 
   function applyZoom(){
     document.documentElement.style.zoom = zoomLevel;
-    try { localStorage.setItem("kanban_zoom", String(zoomLevel)); } catch(_){}
+    try { localStorage.setItem(zoomStorageKey(), String(zoomLevel)); } catch(_){}
   }
 
   function setupZoom(){
-    applyZoom();
+    loadZoom();
     window.addEventListener("wheel", function(e){
       if(!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
@@ -1436,6 +1504,94 @@
       else if(e.key === "=" || e.key === "+"){ e.preventDefault(); zoomLevel = Math.min(ZOOM_MAX, zoomLevel + ZOOM_STEP); applyZoom(); }
       else if(e.key === "-"){ e.preventDefault(); zoomLevel = Math.max(ZOOM_MIN, zoomLevel - ZOOM_STEP); applyZoom(); }
     });
+  }
+
+  /* ---------- Widget mode ---------- */
+  function applyWidgetModeUI(){
+    document.body.classList.toggle("widget-mode", widgetMode);
+    loadZoom();
+    var btn = document.getElementById("btnWidgetMode");
+    if(btn){
+      btn.textContent = widgetMode ? "退出小组件" : "小组件模式";
+      btn.classList.toggle("primary", widgetMode);
+      btn.title = widgetMode
+        ? "切换回普通模式（恢复正常窗口、任务栏与最小化按钮）"
+        : "切换为小组件模式（窗口置顶、隐藏任务栏图标、竖向排列栏目）";
+    }
+    try { localStorage.setItem("kanban_widget_mode", widgetMode ? "1" : "0"); } catch(_){}
+  }
+
+  async function syncWidgetMode(){
+    try {
+      var backendMode = await invoke("get_widget_mode");
+      if(!!backendMode !== widgetMode){
+        widgetMode = !!backendMode;
+        applyWidgetModeUI();
+      }
+      // Idempotent on the backend; ensures flags/geometry stay consistent.
+      await invoke("set_widget_mode", { enabled: widgetMode });
+    } catch(e){
+      console.warn("Failed to sync widget mode with backend:", e);
+    }
+  }
+
+  async function toggleWidgetMode(){
+    var target = !widgetMode;
+    try {
+      await invoke("set_widget_mode", { enabled: target });
+    } catch(e){
+      alert("切换小组件模式失败：" + (e && e.message ? e.message : e));
+      return;
+    }
+    widgetMode = target;
+    applyWidgetModeUI();
+    if(state) renderBoard();
+  }
+
+  function setupWidgetMode(){
+    applyWidgetModeUI();
+    document.getElementById("btnWidgetMode").addEventListener("click", toggleWidgetMode);
+  }
+
+  /* ---------- Always on top ---------- */
+  function applyAlwaysOnTopUI(){
+    var btn = document.getElementById("btnAlwaysOnTop");
+    if(btn){
+      btn.textContent = alwaysOnTop ? "取消置顶" : "窗口置顶";
+      btn.classList.toggle("primary", alwaysOnTop);
+      btn.title = alwaysOnTop ? "取消窗口置顶（恢复正常层级）" : "让窗口始终显示在其他窗口之上";
+    }
+    try { localStorage.setItem("kanban_always_on_top", alwaysOnTop ? "1" : "0"); } catch(_){}
+  }
+
+  async function syncAlwaysOnTop(){
+    try {
+      var backend = await invoke("get_always_on_top");
+      if(!!backend !== alwaysOnTop){
+        alwaysOnTop = !!backend;
+        applyAlwaysOnTopUI();
+      }
+      await invoke("set_always_on_top", { enabled: alwaysOnTop });
+    } catch(e){
+      console.warn("Failed to sync always-on-top with backend:", e);
+    }
+  }
+
+  async function toggleAlwaysOnTop(){
+    var target = !alwaysOnTop;
+    try {
+      await invoke("set_always_on_top", { enabled: target });
+    } catch(e){
+      alert("切换窗口置顶失败：" + (e && e.message ? e.message : e));
+      return;
+    }
+    alwaysOnTop = target;
+    applyAlwaysOnTopUI();
+  }
+
+  function setupAlwaysOnTop(){
+    applyAlwaysOnTopUI();
+    document.getElementById("btnAlwaysOnTop").addEventListener("click", toggleAlwaysOnTop);
   }
 
   /* ---------- Filter bars collapse/expand ---------- */
@@ -1463,7 +1619,11 @@
   async function init(){
     setupZoom();
     setupFilterToggle();
+    setupWidgetMode();
+    setupAlwaysOnTop();
     await loadFromDisk();
+    await syncWidgetMode();
+    await syncAlwaysOnTop();
     render();
 
     document.getElementById("btnNewCard").addEventListener("click", function(){ openCardModal(null, null, null); });
