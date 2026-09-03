@@ -1,0 +1,129 @@
+name: Build Tauri (Windows 7 SP1 compatible)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  WEBVIEW2_VERSION: "109.0.1518.78"
+  RUST_VERSION: "1.77.2"
+
+jobs:
+  build-win7:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------- Step 1 & 2: Download + extract fixed-version WebView2 runtime ----------
+      - name: Download WebView2 Fixed Version Runtime
+        shell: pwsh
+        run: |
+          $url = "https://github.com/westinyang/WebView2RuntimeArchive/releases/download/${{ env.WEBVIEW2_VERSION }}/Microsoft.WebView2.FixedVersionRuntime.${{ env.WEBVIEW2_VERSION }}.x64.cab"
+          Invoke-WebRequest -Uri $url -OutFile "webview2.cab"
+
+      - name: Extract WebView2 runtime into src-tauri
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "./src-tauri" | Out-Null
+          expand.exe .\webview2.cab -F:* ./src-tauri
+          # sanity check the expected folder exists
+          Get-ChildItem "./src-tauri" | Where-Object { $_.Name -like "Microsoft.WebView2.FixedVersionRuntime*" }
+
+ # ---------- Ensure Cargo.toml declares rust-version so the MSRV resolver can filter incompatible deps ----------
+      - name: Ensure rust-version is set in Cargo.toml
+        shell: pwsh
+        run: |
+          $cargoTomlPath = "./src-tauri/Cargo.toml"
+          $content = Get-Content $cargoTomlPath -Raw
+ 
+          if ($content -match '(?m)^\s*rust-version\s*=') {
+            Write-Host "rust-version already set in Cargo.toml, leaving it as-is."
+          } else {
+            # Insert rust-version right after the [package] header
+            $pattern = '(?m)^\[package\]\s*$'
+            if ($content -notmatch $pattern) {
+              throw "Could not find [package] section in $cargoTomlPath"
+            }
+            $replacement = "[package]`nrust-version = `"${{ env.RUST_VERSION }}`""
+            $newContent = [regex]::Replace($content, $pattern, $replacement, 1)
+            Set-Content -Path $cargoTomlPath -Value $newContent -NoNewline
+            Write-Host "Added rust-version = `"${{ env.RUST_VERSION }}`" to Cargo.toml"
+          }
+ 
+          Get-Content $cargoTomlPath | Select-Object -First 10
+ 
+      # ---------- Resolve dependencies with the runner's latest cargo (can parse edition2024 manifests) ----------
+      # Doing this BEFORE downgrading Rust lets the MSRV-aware resolver read rust-version
+      # from Cargo.toml and skip any transitive dependency that requires a newer Rust,
+      # instead of failing to even parse its manifest later on with the old cargo.
+      - name: Regenerate Cargo.lock with MSRV-aware resolver
+        working-directory: ./src-tauri
+        shell: pwsh
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+        run: |
+          rustc --version
+          cargo --version
+          Remove-Item Cargo.lock -ErrorAction SilentlyContinue
+          cargo generate-lockfile
+ 
+      # ---------- Step 4: Pin Rust toolchain for the actual build ----------
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+ 
+      - name: Set default toolchain
+        shell: pwsh
+        run: |
+          rustup default ${{ env.RUST_VERSION }}
+          rustc --version
+ 
+      # ---------- Node / frontend deps ----------
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+ 
+      - name: Install npm dependencies
+        run: npm ci
+ 
+      # ---------- Step 3: tauri.conf.json ----------
+      # These edits are best committed to the repo permanently (they don't change per-run),
+      # but this step verifies them in CI as a safety net.
+      - name: Verify tauri.conf.json points at extracted runtime
+        shell: pwsh
+        run: |
+          $confPath = "./src-tauri/tauri.win7.conf.json"
+          $expectedPath = "./Microsoft.WebView2.FixedVersionRuntime.${{ env.WEBVIEW2_VERSION }}.x64/"
+          $content = Get-Content $confPath -Raw
+          if ($content -notmatch [regex]::Escape($expectedPath)) {
+            Write-Warning "tauri.win7.conf.json does not reference $expectedPath - make sure fixedRuntime path is set correctly in the committed config."
+          }
+
+      - name: Downgrade any remaining pinned dependencies
+        working-directory: ./src-tauri
+        shell: pwsh
+        run: |
+          cargo update open --precise 5.1.4 2>$null
+          exit 0
+ 
+ 
+      # ---------- Step 4: Build ----------
+      - name: Build Tauri app
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C link-arg=/DELAYLOAD:advapi32.dll -C link-arg=delayimp.lib"
+        run: npm run tauri build -- --config src-tauri/tauri.win7.conf.json -- --keep-going
+ 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-win7-build
+          path: |
+            src-tauri/target/release/bundle/**
+          if-no-files-found: error
